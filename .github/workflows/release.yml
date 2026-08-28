@@ -52,3 +52,14 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+      - name: Repack AppImage without host-provided Wayland libraries
+        if: runner.os == 'Linux'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          appimage="$(find src-tauri/target/release/bundle/appimage -maxdepth 1 -name '*.AppImage' -print -quit)"
+          test -n "$appimage"
+          bash scripts/fix-appimage.sh "$appimage"
+          asset="$RUNNER_TEMP/$(basename "$appimage" | tr ' ' '.')"
+          cp "$appimage" "$asset"
+          gh release upload "${{ github.ref_name }}" "$asset" --clobber
