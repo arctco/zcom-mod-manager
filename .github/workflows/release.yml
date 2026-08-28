@@ -20,35 +20,32 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: zcom-mod-manager/package-lock.json
+          cache-dependency-path: package-lock.json
       - uses: dtolnay/rust-toolchain@stable
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: zcom-mod-manager/src-tauri
+          workspaces: src-tauri
       - name: Install Linux system packages
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf p7zip-full
       - run: npm ci
-        working-directory: zcom-mod-manager
       - name: Prepare verified retoc sidecar
         if: runner.os == 'Linux'
         run: npm run prepare:retoc
-        working-directory: zcom-mod-manager
       - name: Prepare verified retoc sidecar
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/prepare-retoc.ps1
-        working-directory: zcom-mod-manager
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NO_STRIP: ${{ runner.os == 'Linux' && '1' || '' }}
         with:
-          projectPath: zcom-mod-manager
+          projectPath: .
           tagName: ${{ github.ref_name }}
           releaseName: ZCOM Mod Manager ${{ github.ref_name }}
           releaseBody: See CHANGELOG.md for release notes. Builds are unsigned for v0.1.0.

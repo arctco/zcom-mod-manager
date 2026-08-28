@@ -16,22 +16,19 @@ jobs:
           - os: windows-2025
             bundles: nsis,msi
     runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        working-directory: zcom-mod-manager
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: zcom-mod-manager/package-lock.json
+          cache-dependency-path: package-lock.json
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: zcom-mod-manager/src-tauri
+          workspaces: src-tauri
       - name: Install Linux system packages
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf p7zip-full
