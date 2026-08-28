@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            bundles: appimage,deb
+          - os: windows-2025
+            bundles: nsis,msi
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: zcom-mod-manager
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: zcom-mod-manager/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: zcom-mod-manager/src-tauri
+      - name: Install Linux system packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf p7zip-full
+      - run: npm ci
+      - name: Prepare verified retoc sidecar
+        shell: bash
+        if: runner.os == 'Linux'
+        run: npm run prepare:retoc
+      - name: Prepare verified retoc sidecar
+        shell: pwsh
+        if: runner.os == 'Windows'
+        run: ./scripts/prepare-retoc.ps1
+      - run: npm run typecheck
+      - run: npm test
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --all-features
+      - name: Production application build
+        run: npm run tauri build -- --no-bundle

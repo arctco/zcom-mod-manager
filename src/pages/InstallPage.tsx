@@ -1,0 +1,20 @@
+import { AlertTriangle, Archive, Check, ChevronRight, FileArchive, FolderOpen, ShieldCheck, X } from "lucide-react";
+import { StatusBadge } from "../components/StatusBadge";
+import type { ModPreview } from "../types";
+
+export function InstallPage({ preview, loading, advanced, onAdvanced, onChooseFile, onChooseFolder, onInstall, onCancel }: { preview: ModPreview | null; loading: boolean; advanced: boolean; onAdvanced: () => void; onChooseFile: () => void; onChooseFolder: () => void; onInstall: () => void; onCancel: () => void }) {
+  return <div className="page install-page"><header className="page-header"><div><p className="eyebrow">SAFE INSTALLER</p><h1>{preview ? "Review mod" : "Install a mod"}</h1><p className="muted">Nothing is deployed until validation succeeds and you confirm.</p></div></header>
+    {!preview ? <section className={`drop-zone ${loading ? "loading" : ""}`} aria-busy={loading}><div className="drop-icon"><Archive aria-hidden size={32} /></div><h2>{loading ? "Inspecting payload…" : "Drop a mod here"}</h2><p>ZIP, 7z, PAK, UTOC/UCAS, or a UE4SS Lua mod folder</p><div><button className="primary" onClick={onChooseFile} disabled={loading}><FileArchive size={18} />Choose archive or file</button><button onClick={onChooseFolder} disabled={loading}><FolderOpen size={18} />Choose folder</button></div><small>Archives are treated as untrusted input and extracted into a temporary sandbox.</small></section> : <div className="preview-grid">
+      <section className="panel preview-main"><div className="preview-title"><div className="mod-icon large"><Archive aria-hidden /></div><div><p className="eyebrow">INSTALLATION PREVIEW</p><h2>{preview.name}</h2>{preview.author && <p>by {preview.author}</p>}</div><StatusBadge status={preview.valid ? "good" : "error"}>{preview.valid ? "Ready to install" : "Validation failed"}</StatusBadge></div>
+        {preview.description && <p className="description">{preview.description}</p>}
+        <div className="detail-list"><div><span>Detected type</span><b>{preview.modType === "iostore" ? "IoStore packaged mod" : preview.modType === "pak" ? "PAK-only mod" : "UE4SS Lua mod"}</b></div><div><span>Container</span><b className={preview.verification === "passed" || preview.verification === "not-required" ? "success-text" : "warn-text"}>{preview.verification === "passed" ? "✓ retoc verification passed" : preview.verification === "not-required" ? "✓ Not required" : preview.verification === "unavailable" ? "retoc setup required" : "Verification failed"}</b></div><div><span>Packages modified</span><b>{preview.packageCount || "Unknown"}</b></div><div><span>Game compatibility</span><StatusBadge status={preview.compatibility}>{preview.compatibilityMessage}</StatusBadge></div></div>
+        <h3>Files</h3><ul className="file-list">{preview.files.map(file => <li key={file}><Check aria-hidden size={16} />{file}</li>)}</ul>
+        {preview.warnings.map(w => <div className="inline-warning" key={w}><AlertTriangle aria-hidden size={17} />{w}</div>)}
+        <button className="disclosure" onClick={onAdvanced} aria-expanded={advanced}><ChevronRight className={advanced ? "rotated" : ""} size={16} />Advanced details</button>
+        {advanced && <div className="advanced"><p>{preview.verificationDetails ?? "No additional tool output."}</p>{preview.packageNames.length > 0 && <><h3>Package paths (spoilers possible)</h3><code>{preview.packageNames.join("\n")}</code></>}</div>}
+        <footer className="dialog-actions"><button onClick={onCancel}><X size={17} />Cancel</button><button className="primary" onClick={onInstall} disabled={!preview.valid}><ShieldCheck size={17} />Install</button></footer>
+      </section>
+      <aside className="panel safety-note"><ShieldCheck aria-hidden /><h2>Safe by default</h2><p>The manager keeps its own source copy, deploys only recognized payload files, and records a SHA-256 checksum for every destination.</p><ul><li>No executables are run</li><li>Unknown files are ignored</li><li>Partial installs roll back</li><li>Changed files are kept on removal</li></ul></aside>
+    </div>}
+  </div>;
+}

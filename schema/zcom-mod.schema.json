@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zcom-modding.github.io/zcom-mod.schema.json",
+  "title": "ZCOM Mod Manifest",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schemaVersion", "id", "name", "type"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "id": { "type": "string", "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+$" },
+    "name": { "type": "string", "minLength": 1 },
+    "version": { "type": "string" },
+    "author": { "type": "string" },
+    "description": { "type": "string" },
+    "game": {
+      "type": "object",
+      "required": ["appId"],
+      "properties": {
+        "appId": { "const": 2075800 },
+        "testedBuilds": { "type": "array", "items": { "type": "string", "pattern": "^[0-9]+$" }, "uniqueItems": true },
+        "strict": { "type": "boolean", "default": false }
+      }
+    },
+    "type": { "type": "array", "items": { "enum": ["iostore", "pak", "ue4ss"] }, "minItems": 1, "uniqueItems": true },
+    "requires": { "type": "object", "properties": { "ue4ss": { "type": "boolean" } } }
+  }
+}

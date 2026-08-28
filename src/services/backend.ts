@@ -1,0 +1,34 @@
+import { invoke } from "@tauri-apps/api/core";
+import type { AppSettings, Dashboard, DiagnosticReport, ModPreview, ModSummary } from "../types";
+
+export const backend = {
+  dashboard: () => invoke<Dashboard>("get_dashboard"),
+  mods: () => invoke<ModSummary[]>("list_mods"),
+  inspect: (path: string) => invoke<ModPreview>("inspect_mod", { path }),
+  install: (stagingId: string) => invoke<ModSummary>("install_mod", { stagingId }),
+  setEnabled: (id: string, enabled: boolean) => invoke<void>("set_mod_enabled", { id, enabled }),
+  uninstall: (id: string, force = false) => invoke<void>("uninstall_mod", { id, force }),
+  verify: (id: string) => invoke<string>("verify_mod", { id }),
+  diagnostics: () => invoke<DiagnosticReport>("run_diagnostics"),
+  settings: () => invoke<AppSettings>("get_settings"),
+  saveSettings: (settings: AppSettings) => invoke<void>("save_settings", { settings }),
+  setGamePath: (path: string) => invoke<GameInfo>("set_game_path", { path }),
+  copyDiagnostics: () => invoke<string>("diagnostic_report"),
+  managedPath: (kind: "mods" | "logs" | "data" | `mod:${string}`) => invoke<string>("managed_path", { kind })
+};
+
+interface GameInfo {
+  detected: boolean;
+  path: string | null;
+  steamBuildId: string | null;
+  installState: string | null;
+  engine: string;
+  compatDataPath: string | null;
+  source: "automatic" | "manual" | "none";
+}
+
+export function friendlyError(error: unknown): string {
+  if (typeof error === "string") return error;
+  if (error instanceof Error) return error.message;
+  return "The operation could not be completed.";
+}

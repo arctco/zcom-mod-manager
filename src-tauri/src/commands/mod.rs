@@ -1,0 +1,239 @@
+use crate::{
+    database, deployment, diagnostics,
+    error::{AppError, Result},
+    models::{
+        AppSettings, Dashboard, DiagnosticReport, GameInfo, ModPreview, ModSummary, StagedMod,
+    },
+    mods, retoc, steam, ue4ss, AppContext,
+};
+use std::{
+    path::{Path, PathBuf},
+    sync::MutexGuard,
+};
+use tauri::State;
+
+fn connection(ctx: &AppContext) -> Result<rusqlite::Connection> {
+    database::open(&ctx.db_path)
+}
+fn game(ctx: &AppContext) -> Result<GameInfo> {
+    let conn = connection(ctx)?;
+    let settings = database::settings(&conn)?;
+    if let Some(path) = settings.game_path.filter(|p| !p.is_empty()) {
+        steam::from_manual(Path::new(&path))
+    } else {
+        Ok(steam::discover()?.unwrap_or_default())
+    }
+}
+fn require_game(ctx: &AppContext) -> Result<(GameInfo, PathBuf)> {
+    let info = game(ctx)?;
+    let path = info
+        .path
+        .as_ref()
+        .map(PathBuf::from)
+        .ok_or(AppError::GameNotFound)?;
+    Ok((info, path))
+}
+fn tool(ctx: &AppContext) -> Result<crate::models::ToolInfo> {
+    let conn = connection(ctx)?;
+    let settings = database::settings(&conn)?;
+    Ok(retoc::find(settings.retoc_path.as_deref()))
+}
+fn previews(
+    ctx: &AppContext,
+) -> Result<MutexGuard<'_, std::collections::HashMap<String, StagedMod>>> {
+    ctx.previews
+        .lock()
+        .map_err(|_| AppError::Other("preview state lock was poisoned".into()))
+}
+
+#[tauri::command]
+pub fn get_dashboard(ctx: State<'_, AppContext>) -> Result<Dashboard> {
+    let conn = connection(&ctx)?;
+    let game = game(&ctx)?;
+    let (installed_mods, enabled_mods) = database::counts(&conn)?;
+    let conflict_count = database::conflict_count(&conn)?;
+    let game_path = game.path.as_deref().map(Path::new);
+    let compat = game.compat_data_path.as_deref().map(Path::new);
+    let ue4ss = ue4ss::detect(game_path, compat);
+    let retoc = tool(&ctx)?;
+    Ok(Dashboard {
+        game,
+        installed_mods,
+        enabled_mods,
+        conflict_count,
+        ue4ss,
+        previous_build_id: ctx.previous_build_id.clone(),
+        data_directory: ctx.data_dir.display().to_string(),
+        retoc,
+    })
+}
+#[tauri::command]
+pub fn list_mods(ctx: State<'_, AppContext>) -> Result<Vec<ModSummary>> {
+    database::list_mods(&connection(&ctx)?)
+}
+
+#[tauri::command]
+pub fn inspect_mod(path: String, ctx: State<'_, AppContext>) -> Result<ModPreview> {
+    let conn = connection(&ctx)?;
+    let settings = database::settings(&conn)?;
+    let game = game(&ctx)?;
+    let ue = ue4ss::detect(
+        game.path.as_deref().map(Path::new),
+        game.compat_data_path.as_deref().map(Path::new),
+    );
+    let tool = retoc::find(settings.retoc_path.as_deref());
+    let (staged, preview) = mods::scan(
+        Path::new(&path),
+        &ctx.cache_dir,
+        &tool,
+        game.steam_build_id.as_deref(),
+        ue.healthy,
+        settings.advanced_package_names,
+    )?;
+    log(
+        &ctx,
+        "info",
+        "mod_inspected",
+        &format!("type={} files={}", preview.mod_type, preview.files.len()),
+    );
+    previews(&ctx)?.insert(staged.staging_id.clone(), staged);
+    Ok(preview)
+}
+
+#[tauri::command]
+pub fn install_mod(staging_id: String, ctx: State<'_, AppContext>) -> Result<ModSummary> {
+    let staged = previews(&ctx)?
+        .remove(&staging_id)
+        .ok_or(AppError::PreviewExpired)?;
+    if staged.mod_type == "iostore" && staged.verification != "passed" {
+        return Err(AppError::RetocVerificationFailed(
+            staged
+                .verification_details
+                .unwrap_or_else(|| "verification did not pass".into()),
+        ));
+    }
+    let (game_info, game_path) = require_game(&ctx)?;
+    let mut conn = connection(&ctx)?;
+    let result = deployment::install(
+        &mut conn,
+        &ctx.mods_dir,
+        &game_path,
+        &staged,
+        game_info.steam_build_id,
+    );
+    let _ = std::fs::remove_dir_all(&staged.staging_root);
+    let summary = result?;
+    log(
+        &ctx,
+        "info",
+        "mod_installed",
+        &format!("mod_id={} type={}", summary.id, summary.mod_type),
+    );
+    Ok(summary)
+}
+
+#[tauri::command]
+pub fn set_mod_enabled(id: String, enabled: bool, ctx: State<'_, AppContext>) -> Result<()> {
+    let (_, game_path) = require_game(&ctx)?;
+    let conn = connection(&ctx)?;
+    deployment::set_enabled(&conn, &ctx.mods_dir, &game_path, &id, enabled)?;
+    log(
+        &ctx,
+        "info",
+        if enabled {
+            "mod_enabled"
+        } else {
+            "mod_disabled"
+        },
+        &format!("mod_id={id}"),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub fn uninstall_mod(id: String, force: bool, ctx: State<'_, AppContext>) -> Result<()> {
+    let game_path = game(&ctx)?.path.map(PathBuf::from);
+    let conn = connection(&ctx)?;
+    deployment::uninstall(&conn, &ctx.mods_dir, &id, force, game_path.as_deref())?;
+    log(&ctx, "info", "mod_uninstalled", &format!("mod_id={id}"));
+    Ok(())
+}
+
+#[tauri::command]
+pub fn verify_mod(id: String, ctx: State<'_, AppContext>) -> Result<String> {
+    deployment::verify(&connection(&ctx)?, &id)
+}
+#[tauri::command]
+pub fn run_diagnostics(ctx: State<'_, AppContext>) -> Result<DiagnosticReport> {
+    let conn = connection(&ctx)?;
+    let game = game(&ctx)?;
+    let ue = ue4ss::detect(
+        game.path.as_deref().map(Path::new),
+        game.compat_data_path.as_deref().map(Path::new),
+    );
+    diagnostics::run(&conn, &game, &ue, &tool(&ctx)?)
+}
+#[tauri::command]
+pub fn diagnostic_report(ctx: State<'_, AppContext>) -> Result<String> {
+    Ok(run_diagnostics(ctx)?.text)
+}
+#[tauri::command]
+pub fn get_settings(ctx: State<'_, AppContext>) -> Result<AppSettings> {
+    database::settings(&connection(&ctx)?)
+}
+#[tauri::command]
+pub fn save_settings(mut settings: AppSettings, ctx: State<'_, AppContext>) -> Result<()> {
+    if settings.game_path.as_deref() == Some("") {
+        settings.game_path = None
+    }
+    if settings.retoc_path.as_deref() == Some("") {
+        settings.retoc_path = None
+    }
+    database::save_settings(&connection(&ctx)?, &settings)
+}
+#[tauri::command]
+pub fn set_game_path(path: String, ctx: State<'_, AppContext>) -> Result<GameInfo> {
+    let info = steam::from_manual(Path::new(&path))?;
+    database::set_setting(&connection(&ctx)?, "game_path", &path)?;
+    Ok(info)
+}
+#[tauri::command]
+pub fn managed_path(kind: String, ctx: State<'_, AppContext>) -> Result<String> {
+    let path = if let Some(id) = kind.strip_prefix("mod:") {
+        let path = ctx.mods_dir.join(id);
+        if !path.is_dir() {
+            return Err(AppError::Other(
+                "Managed mod source folder was not found.".into(),
+            ));
+        }
+        path
+    } else {
+        match kind.as_str() {
+            "logs" => ctx.logs_dir.clone(),
+            "data" => ctx.data_dir.clone(),
+            "mods" => game(&ctx)?
+                .path
+                .map(PathBuf::from)
+                .map(|p| p.join("SWZeroCompany/Content/Paks/~mods"))
+                .unwrap_or_else(|| ctx.mods_dir.clone()),
+            _ => return Err(AppError::Other("unknown managed path".into())),
+        }
+    };
+    std::fs::create_dir_all(&path)?;
+    Ok(path.display().to_string())
+}
+
+pub fn log(ctx: &AppContext, level: &str, event: &str, detail: &str) {
+    use std::io::Write;
+    let detail = dirs::home_dir()
+        .map(|h| detail.replace(&h.display().to_string(), "~"))
+        .unwrap_or_else(|| detail.into());
+    let record = serde_json::json!({"timestamp":chrono::Utc::now().to_rfc3339(),"level":level,"event":event,"detail":detail});
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(ctx.logs_dir.join("application.jsonl"))
+    {
+        let _ = writeln!(file, "{record}");
+    }
+}
