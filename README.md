@@ -249,12 +249,18 @@ download on its own. Downloads begin where they are meant to: on the website.
 A link for any other game is refused rather than downloaded.
 
 If another mod manager already holds `nxm://`, Settings names it rather than
-silently failing. On Linux, note that `xdg-mime` resolves a desktop entry by
-taking the first whitespace-separated word of its `Exec` line: an application
-path containing a space is ignored however it is quoted. Running from a source
-tree under such a path therefore cannot claim the protocol. Installed `.deb`
-builds live in `/usr/bin` and are unaffected; move an AppImage to a path
-without spaces.
+failing silently, and the switch takes the association over. Turning the switch
+off hands it back.
+
+Linux desktop associations have two traps that this application works around,
+both of which otherwise fail without any error message. `xdg-mime` resolves a
+desktop entry by passing the first whitespace-separated word of `Exec` to
+`command -v` without removing quotes, so a quoted path is never resolved; the
+entry is written unquoted, using a symbolic link when the real path needs
+quoting. And `xdg-mime query` reads `<desktop>-mimeapps.list` before the
+generic `mimeapps.list` while `xdg-mime default` only writes the generic one,
+so a scheme claimed in the prefixed file can never be taken over by
+registering normally; the prefixed files are updated as well.
 
 ### Where the API key is kept
 

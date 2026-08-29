@@ -28,12 +28,18 @@
 - The `nxm://` association is claimed only when enabled in Settings, so it is
   never taken from another mod manager silently. If another manager already
   holds it, Settings names that application instead of failing quietly.
-- On Linux, `xdg-mime` resolves a desktop entry by taking the first
-  whitespace-separated word of `Exec`, so an application path containing a
-  space is silently ignored no matter how the entry is quoted. Running from a
-  source tree under such a path cannot claim `nxm://`; the `.deb` installs to
-  `/usr/bin` and is unaffected. Settings reports this rather than appearing to
-  do nothing.
+- On Linux the `nxm://` desktop entry is written by this application rather
+  than by `tauri-plugin-deep-link`, which quotes `Exec`. `xdg-mime` resolves an
+  entry by passing the first whitespace-separated word of `Exec` to
+  `command -v` without stripping quotes, so a quoted path never resolves and
+  the entry is skipped silently. Paths that genuinely need quoting are reached
+  through a symbolic link instead.
+- `xdg-mime query` reads `<desktop>-mimeapps.list` before the generic
+  `mimeapps.list` when `XDG_CURRENT_DESKTOP` is set, but `xdg-mime default`
+  only writes the generic file. An application that claimed a scheme in the
+  prefixed file keeps it regardless of later registrations, so the prefixed
+  files are updated too — only where they already name the scheme, and the
+  entry is removed again when the association is handed back.
 - Release builds are unsigned. SmartScreen may warn on Windows.
 - Flatpak/Snap sandbox permissions and uncommon portable Steam installations
   may require manual game-path selection.

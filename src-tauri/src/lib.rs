@@ -8,6 +8,8 @@ mod error;
 mod models;
 mod mods;
 mod nexus;
+#[cfg(target_os = "linux")]
+mod protocol;
 mod retoc;
 mod steam;
 mod ue4ss;

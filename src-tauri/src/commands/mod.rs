@@ -379,16 +379,19 @@ fn nxm_handler_owner() -> Option<String> {
 /// letting the toggle appear to do nothing.
 #[cfg(target_os = "linux")]
 fn nxm_handler_problem() -> Option<String> {
-    let exe = std::env::current_exe().ok()?;
-    let exe = std::env::var_os("APPIMAGE")
-        .map(PathBuf::from)
-        .unwrap_or(exe);
-    exe.to_string_lossy().contains(' ').then(|| {
+    let missing: Vec<&str> = ["xdg-mime", "update-desktop-database"]
+        .into_iter()
+        .filter(|tool| {
+            std::env::var_os("PATH").is_none_or(|path| {
+                !std::env::split_paths(&path).any(|dir| dir.join(tool).is_file())
+            })
+        })
+        .collect();
+    (!missing.is_empty()).then(|| {
         format!(
-            "The application path contains a space ({}). xdg-mime cannot resolve such a path, \
-             so the association is ignored. Install the .deb, or move the application to a path \
-             without spaces.",
-            exe.display()
+            "{} is not installed, so nxm:// links cannot be registered. Install xdg-utils and \
+             desktop-file-utils.",
+            missing.join(" and ")
         )
     })
 }
@@ -420,12 +423,30 @@ pub fn set_nxm_handler(
     ctx: State<'_, AppContext>,
 ) -> Result<NexusStatus> {
     use tauri_plugin_deep_link::DeepLinkExt;
-    let result = if enabled {
-        app.deep_link().register("nxm")
+    if enabled {
+        // The plugin quotes Exec, which xdg-mime can never resolve, so the
+        // Linux entry is written by crate::protocol instead. Windows registers
+        // through the registry and is unaffected.
+        #[cfg(target_os = "linux")]
+        crate::protocol::register(
+            app.config()
+                .product_name
+                .as_deref()
+                .unwrap_or("ZCOM Mod Manager"),
+            &ctx.data_dir,
+        )?;
+        #[cfg(not(target_os = "linux"))]
+        app.deep_link().register("nxm").map_err(|e| {
+            AppError::Other(format!("The nxm:// association could not change: {e}"))
+        })?;
     } else {
-        app.deep_link().unregister("nxm")
-    };
-    result.map_err(|e| AppError::Other(format!("The nxm:// association could not change: {e}")))?;
+        app.deep_link().unregister("nxm").map_err(|e| {
+            AppError::Other(format!("The nxm:// association could not change: {e}"))
+        })?;
+        // The plugin only clears the generic list.
+        #[cfg(target_os = "linux")]
+        crate::protocol::unregister()?;
+    }
     let conn = connection(&ctx)?;
     Ok(nexus_status_for(&app, &conn))
 }
