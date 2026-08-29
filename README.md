@@ -1,8 +1,11 @@
-# ZCOM Mod Manager
+<div align="center">
+  <img src="images/icon.png" alt="" width="160" height="160">
+  <h1>ZCOM Mod Manager</h1>
+</div>
 
 A dedicated open-source mod manager for **Star Wars: Zero Company**.
 
-ZCOM Mod Manager 0.1.0 understands Zero Company mod payloads instead of
+ZCOM Mod Manager understands Zero Company mod payloads instead of
 treating them as arbitrary files. It discovers Steam installations, validates
 IoStore containers with retoc, manages UE4SS Lua mods, detects package overlap,
 records SHA-256 ownership, and treats Linux/Proton as a first-class platform.
