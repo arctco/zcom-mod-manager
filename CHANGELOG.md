@@ -2,7 +2,7 @@
 
 All notable changes are documented here.
 
-## Unreleased
+## 0.1.2
 
 - Added the Nexus Mods `nxm://` handoff. **Mod Manager Download** on the website
   hands the link to the manager, which fetches the file and routes it through
