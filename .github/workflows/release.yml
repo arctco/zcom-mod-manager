@@ -59,14 +59,17 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $release = "src-tauri/target/release"
-          $exe = Get-Item (Join-Path $release "ZCOM Mod Manager.exe")
+          $exe = @("zcom-mod-manager.exe", "ZCOM Mod Manager.exe") |
+            ForEach-Object { Join-Path $release $_ } |
+            Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $exe) { throw "app executable not found in ${release}: $((Get-ChildItem $release -Filter *.exe).Name -join ', ')" }
           $retoc = Get-ChildItem $release -Filter "retoc*.exe" | Select-Object -First 1
-          if (-not $retoc) { throw "retoc sidecar not found in $release" }
+          if (-not $retoc) { throw "retoc sidecar not found in ${release}" }
           $version = "${{ github.ref_name }}" -replace '^v', ''
           $stage = Join-Path $env:RUNNER_TEMP "portable"
           Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item $exe.FullName $stage
+          Copy-Item $exe (Join-Path $stage "ZCOM Mod Manager.exe")
           Copy-Item $retoc.FullName (Join-Path $stage "retoc.exe")
           Copy-Item LICENSE, README.md, THIRD_PARTY_NOTICES.md $stage
           $asset = Join-Path $env:RUNNER_TEMP "ZCOM.Mod.Manager_${version}_x64-portable.zip"
