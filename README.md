@@ -397,7 +397,7 @@ with real user paths or game data.
 ## Credits
 
 Thanks to the Zero Company modding community and to the maintainers of retoc,
-Tauri, React, rusqlite, zip-rs, and the wider open-source ecosystem.
+Tauri, React, rusqlite, zip-rs, and the wider open-source ecosystem. Mod logo is not made by me, credits go to lornaka.
 
 ## Third-Party Software
 

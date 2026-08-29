@@ -24,3 +24,4 @@ logs/
 release/*.deb
 release/*.AppImage
 testing/
+nexusdescription.txt
