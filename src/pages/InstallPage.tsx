@@ -1,8 +1,9 @@
 import { AlertTriangle, Archive, Check, ChevronRight, FileArchive, FolderOpen, ShieldCheck, X } from "lucide-react";
 import { StatusBadge } from "../components/StatusBadge";
-import type { ModPreview } from "../types";
+import { formatBytes } from "../utils/format";
+import type { DownloadProgress, ModPreview } from "../types";
 
-export function InstallPage({ preview, loading, advanced, onAdvanced, onChooseFile, onChooseFolder, onInstall, onCancel }: { preview: ModPreview | null; loading: boolean; advanced: boolean; onAdvanced: () => void; onChooseFile: () => void; onChooseFolder: () => void; onInstall: () => void; onCancel: () => void }) {
+export function InstallPage({ preview, loading, download, advanced, onAdvanced, onChooseFile, onChooseFolder, onInstall, onCancel }: { preview: ModPreview | null; loading: boolean; download: DownloadProgress | null; advanced: boolean; onAdvanced: () => void; onChooseFile: () => void; onChooseFolder: () => void; onInstall: () => void; onCancel: () => void }) {
   return <div className="page install-page"><header className="page-header"><div><p className="eyebrow">SAFE INSTALLER</p><h1>{preview ? "Review mod" : "Install a mod"}</h1><p className="muted">Nothing is deployed until validation succeeds and you confirm.</p></div></header>
     {!preview ? <section className={`drop-zone ${loading ? "loading" : ""}`} aria-busy={loading}><div className="drop-icon"><Archive aria-hidden size={32} /></div><h2>{loading ? "Inspecting payload…" : "Drop a mod here"}</h2><p>ZIP, 7z, PAK, UTOC/UCAS, or a UE4SS Lua mod folder</p><div><button className="primary" onClick={onChooseFile} disabled={loading}><FileArchive size={18} />Choose archive or file</button><button onClick={onChooseFolder} disabled={loading}><FolderOpen size={18} />Choose folder</button></div><small>Archives are treated as untrusted input and extracted into a temporary sandbox.</small></section> : <div className="preview-grid">
       <section className="panel preview-main"><div className="preview-title"><div className="mod-icon large"><Archive aria-hidden /></div><div><p className="eyebrow">INSTALLATION PREVIEW</p><h2>{preview.name}</h2>{preview.author && <p>by {preview.author}</p>}</div><StatusBadge status={preview.valid ? "good" : "error"}>{preview.valid ? "Ready to install" : "Validation failed"}</StatusBadge></div>

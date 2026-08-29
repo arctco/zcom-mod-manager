@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppSettings, Dashboard, DiagnosticReport, Links, ModPreview, ModSummary, Ue4ssInstallReport } from "../types";
+import type { AppSettings, Dashboard, DiagnosticReport, Links, ModPreview, ModSummary, NexusAccount, NexusStatus, Ue4ssInstallReport } from "../types";
 
 export const backend = {
   dashboard: () => invoke<Dashboard>("get_dashboard"),
@@ -11,6 +11,12 @@ export const backend = {
   verify: (id: string) => invoke<string>("verify_mod", { id }),
   installUe4ss: (path: string) => invoke<Ue4ssInstallReport>("install_ue4ss", { path }),
   links: () => invoke<Links>("get_links"),
+  nexusStatus: () => invoke<NexusStatus>("nexus_status"),
+  setNexusKey: (key: string) => invoke<NexusAccount>("set_nexus_key", { key }),
+  clearNexusKey: () => invoke<void>("clear_nexus_key"),
+  setNxmHandler: (enabled: boolean) => invoke<boolean>("set_nxm_handler", { enabled }),
+  nexusDownload: (url: string) => invoke<string>("nexus_download", { url }),
+  takePendingNxm: () => invoke<string | null>("take_pending_nxm"),
   diagnostics: () => invoke<DiagnosticReport>("run_diagnostics"),
   settings: () => invoke<AppSettings>("get_settings"),
   saveSettings: (settings: AppSettings) => invoke<void>("save_settings", { settings }),

@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
     sync::MutexGuard,
 };
-use tauri::State;
+use tauri::{Manager, State};
 
 fn connection(ctx: &AppContext) -> Result<rusqlite::Connection> {
     database::open(&ctx.db_path)
@@ -278,4 +278,116 @@ pub fn log(ctx: &AppContext, level: &str, event: &str, detail: &str) {
     {
         let _ = writeln!(file, "{record}");
     }
+}
+
+/// What Settings needs to describe the Nexus connection without revealing the
+/// key itself.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NexusStatus {
+    pub has_key: bool,
+    pub storage: Option<crate::credentials::Storage>,
+    pub handler_registered: bool,
+}
+
+#[tauri::command]
+pub fn nexus_status(app: tauri::AppHandle, ctx: State<'_, AppContext>) -> Result<NexusStatus> {
+    let conn = connection(&ctx)?;
+    let storage = crate::credentials::location(&conn);
+    Ok(NexusStatus {
+        has_key: storage.is_some(),
+        storage,
+        handler_registered: nxm_handler_registered(&app),
+    })
+}
+
+/// Checks the key against Nexus before storing it, so a typo is reported at
+/// the moment it is entered rather than during a download.
+#[tauri::command]
+pub async fn set_nexus_key(key: String, app: tauri::AppHandle) -> Result<crate::nexus::Account> {
+    let account = crate::nexus::validate(key.trim()).await?;
+    let ctx = app.state::<AppContext>();
+    let conn = database::open(&ctx.db_path)?;
+    let storage = crate::credentials::store(&conn, &key)?;
+    drop(conn);
+    log(
+        &ctx,
+        "info",
+        "nexus_key_stored",
+        &format!("storage={storage:?} premium={}", account.premium),
+    );
+    Ok(account)
+}
+
+#[tauri::command]
+pub fn clear_nexus_key(ctx: State<'_, AppContext>) -> Result<()> {
+    let conn = connection(&ctx)?;
+    crate::credentials::clear(&conn)?;
+    log(&ctx, "info", "nexus_key_cleared", "");
+    Ok(())
+}
+
+fn nxm_handler_registered(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_deep_link::DeepLinkExt;
+    app.deep_link().is_registered("nxm").unwrap_or(false)
+}
+
+/// Claims or releases the `nxm://` association. Never called on start-up: the
+/// user opts in from Settings so the manager does not quietly take the
+/// protocol away from another mod manager.
+#[tauri::command]
+pub fn set_nxm_handler(enabled: bool, app: tauri::AppHandle) -> Result<bool> {
+    use tauri_plugin_deep_link::DeepLinkExt;
+    let result = if enabled {
+        app.deep_link().register("nxm")
+    } else {
+        app.deep_link().unregister("nxm")
+    };
+    result.map_err(|e| AppError::Other(format!("The nxm:// association could not change: {e}")))?;
+    Ok(nxm_handler_registered(&app))
+}
+
+/// Collects a link that launched the application, exactly once.
+#[tauri::command]
+pub fn take_pending_nxm(ctx: State<'_, AppContext>) -> Result<Option<String>> {
+    let mut pending = ctx
+        .pending_nxm
+        .lock()
+        .map_err(|_| AppError::Other("pending link state lock was poisoned".into()))?;
+    Ok(pending.take())
+}
+
+/// Resolves an `nxm://` link and downloads the file into the cache, returning
+/// the local path. Inspection and installation then run through exactly the
+/// same validation as a file the user picked by hand.
+#[tauri::command]
+pub async fn nexus_download(url: String, app: tauri::AppHandle) -> Result<String> {
+    use tauri::Emitter;
+    let link = crate::nexus::parse_nxm(&url)?;
+    let (api_key, cache_dir) = {
+        let ctx = app.state::<AppContext>();
+        let conn = database::open(&ctx.db_path)?;
+        let key = crate::credentials::load(&conn).ok_or(AppError::NexusKeyMissing)?;
+        (key, ctx.cache_dir.clone())
+    };
+    let info = crate::nexus::file_info(&api_key, &link).await?;
+    let source = crate::nexus::download_link(&api_key, &link).await?;
+    let destination = cache_dir.join("downloads").join(&info.file_name);
+    let emitter = app.clone();
+    let name = info.name.clone();
+    crate::nexus::download_to(&source, &destination, move |done, total| {
+        let _ = emitter.emit(
+            "zcom://download-progress",
+            serde_json::json!({"name": name, "done": done, "total": total}),
+        );
+    })
+    .await?;
+    let ctx = app.state::<AppContext>();
+    log(
+        &ctx,
+        "info",
+        "nexus_download",
+        &format!("mod_id={} file_id={}", link.mod_id, link.file_id),
+    );
+    Ok(destination.display().to_string())
 }

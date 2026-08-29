@@ -32,6 +32,20 @@ pub enum AppError {
     PreviewExpired,
     #[error("Archive support requires the 7z command-line tool on this system.")]
     SevenZipNotFound,
+    #[error("That is not a usable Nexus Mods link: {0}")]
+    NexusLinkInvalid(String),
+    #[error("That download link is for another game ({0}), so it was ignored.")]
+    NexusLinkForAnotherGame(String),
+    #[error("Nexus Mods rejected the API key. Check it in Settings.")]
+    NexusUnauthorized,
+    #[error("Nexus Mods rate limit reached. Try again later.")]
+    NexusRateLimited,
+    #[error("A Nexus Mods API key is required. Add one in Settings.")]
+    NexusKeyMissing,
+    #[error("Nexus Mods returned no download link. Non-premium downloads must start from the Mod Manager Download button on the website.")]
+    NexusNoDownloadLink,
+    #[error("Network request failed: {0}")]
+    Network(String),
     #[error("Database error: {0}")]
     Database(#[from] rusqlite::Error),
     #[error("File operation failed: {0}")]

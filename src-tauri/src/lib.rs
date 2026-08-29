@@ -1,17 +1,20 @@
 mod archives;
 mod commands;
+mod credentials;
 mod database;
 mod deployment;
 mod diagnostics;
 mod error;
 mod models;
 mod mods;
+mod nexus;
 mod retoc;
 mod steam;
 mod ue4ss;
 
 use std::{collections::HashMap, path::PathBuf, sync::Mutex};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
+use tauri_plugin_deep_link::DeepLinkExt;
 
 pub struct AppContext {
     data_dir: PathBuf,
@@ -21,14 +24,40 @@ pub struct AppContext {
     db_path: PathBuf,
     previews: Mutex<HashMap<String, models::StagedMod>>,
     previous_build_id: Option<String>,
+    /// An `nxm://` link that launched this process. Emitting it during setup
+    /// would be lost, because the interface has not subscribed yet, so it is
+    /// held here until the interface collects it on mount.
+    pending_nxm: Mutex<Option<String>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // A second launch is almost always the browser handing over an
+        // nxm:// link. Forward it to the running window instead of opening
+        // another copy of the manager.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_focus();
+            }
+            if let Some(url) = argv.iter().find(|arg| arg.starts_with("nxm://")) {
+                let _ = app.emit("zcom://nxm", url.clone());
+            }
+        }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            // Links delivered while the application is already running, and on
+            // Linux the link that started this process.
+            let handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                for url in event.urls() {
+                    if url.scheme() == "nxm" {
+                        let _ = handle.emit("zcom://nxm", url.to_string());
+                    }
+                }
+            });
             let data_dir = app.path().app_data_dir()?;
             let cache_dir = app.path().app_cache_dir()?;
             let mods_dir = data_dir.join("mods");
@@ -69,6 +98,7 @@ pub fn run() {
                 db_path,
                 previews: Mutex::new(HashMap::new()),
                 previous_build_id,
+                pending_nxm: Mutex::new(std::env::args().find(|arg| arg.starts_with("nxm://"))),
             });
             Ok(())
         })
@@ -82,6 +112,12 @@ pub fn run() {
             commands::verify_mod,
             commands::install_ue4ss,
             commands::get_links,
+            commands::nexus_status,
+            commands::set_nexus_key,
+            commands::clear_nexus_key,
+            commands::set_nxm_handler,
+            commands::nexus_download,
+            commands::take_pending_nxm,
             commands::run_diagnostics,
             commands::diagnostic_report,
             commands::get_settings,

@@ -4,6 +4,15 @@ All notable changes are documented here.
 
 ## Unreleased
 
+- Added the Nexus Mods `nxm://` handoff. **Mod Manager Download** on the website
+  hands the link to the manager, which fetches the file and routes it through
+  the existing review and validation path.
+- Added Nexus API key storage in the OS secret store, with a plain-text database
+  fallback that the interface discloses.
+- Added an opt-in `nxm://` protocol registration toggle; the association is
+  never claimed automatically.
+- Links for other games are refused rather than downloaded.
+
 - Fixed UE4SS upgrades leaving runtime-supplied Lua mods at their old version.
   Only `UE4SS-settings.ini`, `mods.txt`, `mods.json`, and `load_order.txt` are
   preserved now; mods a package ships move with the runtime, and mods the user

@@ -195,14 +195,7 @@ paired with stale scripts.
 The manager reports how many files it wrote and which it kept. To adopt a
 shipped `UE4SS-settings.ini`, rename or delete your copy and install again.
 
-### Why there is no automatic download
-
-ZCOM Mod Manager never fetches mod content over the network. Nexus Mods does not
-serve direct download links to anonymous clients; a manager gets one either from
-the site's `nxm://` handoff (the **Mod Manager Download** button) or from the
-Nexus API with a personal API key. Both require account credentials and are
-tracked for 0.3 — see [Roadmap](#roadmap). Until then the flow above is one
-click to the download page and one click to install what you downloaded.
+Either flow also works through the Nexus Mods handoff described below.
 
 ## Linux / Proton
 
@@ -236,6 +229,43 @@ through standard Tauri signing secrets without changing application behavior.
 package conflicts, retoc, UE4SS, compatdata, and the Proton DLL override. The
 report is copyable and home-directory paths are sanitized. Structured JSONL
 logs are available from Settings → **Open logs folder**.
+
+## Nexus Mods Handoff
+
+The manager does not browse, search, or scrape Nexus Mods, and it never starts a
+download on its own. Downloads begin where they are meant to: on the website.
+
+1. In **Settings → Nexus Mods downloads**, paste a personal API key from
+   <https://www.nexusmods.com/users/myaccount?tab=api>. The key is verified
+   against Nexus before it is stored.
+2. Enable **Handle `nxm://` links from the browser**. Nothing touches your
+   desktop configuration or registry until you do, and turning it off hands the
+   association back to whatever held it before.
+3. On any Zero Company mod page, press **Mod Manager Download**. The browser
+   passes the link over, the file is fetched with a progress readout, and it
+   lands in the same review screen as a mod you picked by hand — same
+   validation, same conflict checks, same confirmation before anything deploys.
+
+A link for any other game is refused rather than downloaded.
+
+### Where the API key is kept
+
+The key is stored in the operating system's secret store: GNOME Keyring or
+KWallet through the Secret Service, or Credential Manager on Windows. If no
+secret store is available — common on a minimal Linux install — the key falls
+back to the application database in plain text and **Settings says so**, rather
+than implying a protection that is not there.
+
+The key can download on your behalf and is rate-limited against your account.
+Treat it like a password: it is never logged, never sent anywhere except
+`api.nexusmods.com`, and **Remove stored key** clears both locations.
+
+### Why a key is required at all
+
+A non-premium Nexus account cannot obtain a download link from the API alone.
+The `key` and `expires` pair that authorises the download is minted by the
+website when you press **Mod Manager Download**, which is precisely why the
+handoff exists rather than an in-application browser.
 
 ## Optional `zcom-mod.json` Manifest
 
@@ -339,8 +369,8 @@ Confirm checksums after the run finishes. See
 ## Roadmap
 
 - **0.2:** profiles, load-order tools, dependency metadata, mod update checks
-- **0.3:** opt-in Nexus API integration with a user-supplied key, and `nxm://`
-  protocol handling so **Mod Manager Download** on Nexus hands off to this app
+- **0.3:** *(in progress)* Nexus handoff shipped; update checking against the
+  API still to come
 - **Future / separate project:** ZCOM Mod Studio for asset inspection and authoring
 
 ## Contributing

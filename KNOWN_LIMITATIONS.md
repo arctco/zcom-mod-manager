@@ -19,8 +19,14 @@
 - PAK-only mods cannot provide package-level overlap metadata; only destination
   filename collision is available for them.
 - Package load order and full profiles are intentionally deferred to 0.2.
-- Nexus API/download integration is intentionally deferred to 0.3.
-- Installed mods are not checked against Nexus for newer versions.
+- Installed mods are not checked against Nexus for newer versions yet.
+- Downloads must be started from the Nexus Mods website. A non-premium account
+  cannot obtain a download link from the API without the website-minted key, so
+  no in-application browsing or search is offered.
+- Without a Secret Service provider on Linux, the Nexus API key is stored in the
+  application database as plain text. Settings reports which location is in use.
+- The `nxm://` association is claimed only when enabled in Settings, so it is
+  never taken from another mod manager silently.
 - Release builds are unsigned. SmartScreen may warn on Windows.
 - Flatpak/Snap sandbox permissions and uncommon portable Steam installations
   may require manual game-path selection.

@@ -30,6 +30,12 @@ walkdir = "2"
 zip = { version = "2", default-features = false, features = ["deflate", "bzip2", "zstd"] }
 dirs = "6"
 regex = "1"
+tauri-plugin-deep-link = "2.4.9"
+tauri-plugin-single-instance = "2.4.3"
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
+tokio = { version = "1.53.1", features = ["fs", "io-util"] }
+keyring = "4.1.6"
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json", "stream", "http2", "charset"] }
 
 [dev-dependencies]
 tempfile = "3"

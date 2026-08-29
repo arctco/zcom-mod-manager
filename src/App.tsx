@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -11,7 +11,7 @@ import { InstallPage } from "./pages/InstallPage";
 import { ModsPage } from "./pages/ModsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { backend, friendlyError } from "./services/backend";
-import type { AppSettings, Dashboard, DiagnosticReport, Links, ModPreview, ModSummary } from "./types";
+import type { AppSettings, Dashboard, DiagnosticReport, DownloadProgress, Links, ModPreview, ModSummary, NexusAccount, NexusStatus } from "./types";
 
 const defaultSettings: AppSettings = { gamePath: null, retocPath: null, logLevel: "normal", advancedPackageNames: false, reducedMotion: false };
 const defaultLinks: Links = { ue4ssDownload: "", nexusGame: "", project: "" };
@@ -22,6 +22,9 @@ export default function App() {
   const [mods, setMods] = useState<ModSummary[]>([]);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [links, setLinks] = useState<Links>(defaultLinks);
+  const [nexus, setNexus] = useState<NexusStatus | null>(null);
+  const [nexusAccount, setNexusAccount] = useState<NexusAccount | null>(null);
+  const [download, setDownload] = useState<DownloadProgress | null>(null);
   const [preview, setPreview] = useState<ModPreview | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticReport | null>(null);
   const [loading, setLoading] = useState(false);
@@ -32,8 +35,8 @@ export default function App() {
   const notify = (text: string, kind: "ok" | "error" = "ok") => { setToast({ text, kind }); window.setTimeout(() => setToast(null), 4500); };
   const refresh = useCallback(async () => {
     try {
-      const [nextDashboard, nextMods, nextSettings, nextLinks] = await Promise.all([backend.dashboard(), backend.mods(), backend.settings(), backend.links()]);
-      setDashboard(nextDashboard); setMods(nextMods); setSettings(nextSettings); setLinks(nextLinks);
+      const [nextDashboard, nextMods, nextSettings, nextLinks, nextNexus] = await Promise.all([backend.dashboard(), backend.mods(), backend.settings(), backend.links(), backend.nexusStatus()]);
+      setDashboard(nextDashboard); setMods(nextMods); setSettings(nextSettings); setLinks(nextLinks); setNexus(nextNexus);
       document.documentElement.dataset.reduceMotion = String(nextSettings.reducedMotion);
     } catch (error) { notify(friendlyError(error), "error"); }
   }, []);
@@ -47,6 +50,23 @@ export default function App() {
     return () => stop?.();
   }, []);
   useEffect(() => { let stop: (() => void) | undefined; void listen<string>("zcom://refresh", () => void refresh()).then(fn => { stop = fn; }); return () => stop?.(); }, [refresh]);
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    void listen<DownloadProgress>("zcom://download-progress", event => setDownload(event.payload)).then(fn => { stop = fn; });
+    return () => stop?.();
+  }, []);
+  // Kept in a ref so the subscription is created once instead of on every
+  // render, which would leave overlapping listeners behind.
+  const handoffRef = useRef(handoff);
+  handoffRef.current = handoff;
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    void listen<string>("zcom://nxm", event => void handoffRef.current(event.payload)).then(fn => { stop = fn; });
+    // A link that launched the application arrives before this listener exists,
+    // so it is collected from the backend instead.
+    void backend.takePendingNxm().then(url => { if (url) void handoffRef.current(url); });
+    return () => stop?.();
+  }, []);
 
   async function inspect(path: string) { setLoading(true); setPreview(null); try { setPreview(await backend.inspect(path)); } catch (e) { notify(friendlyError(e), "error"); } finally { setLoading(false); } }
   async function choose(options: { directory?: boolean; filters?: { name: string; extensions: string[] }[] } = {}) { const picked = await open({ multiple: false, ...options }); if (typeof picked === "string") await inspect(picked); }
@@ -67,6 +87,35 @@ export default function App() {
       notify(`UE4SS runtime installed: ${report.installed} file${report.installed === 1 ? "" : "s"}.${kept}${proton}`);
     } catch (e) { notify(friendlyError(e), "error"); } finally { setLoading(false); }
   }
+  // Handles a link the browser passed over from the Mod Manager Download button.
+  async function handoff(url: string) {
+    setPage("install"); setPreview(null); setLoading(true); setDownload(null);
+    try {
+      const path = await backend.nexusDownload(url);
+      setDownload(null);
+      setPreview(await backend.inspect(path));
+    } catch (e) { notify(friendlyError(e), "error"); setDownload(null); }
+    finally { setLoading(false); }
+  }
+  async function saveNexusKey(key: string) {
+    try {
+      const account = await backend.setNexusKey(key);
+      setNexusAccount(account);
+      setNexus(await backend.nexusStatus());
+      notify(`Nexus Mods connected as ${account.name}.`);
+    } catch (e) { notify(friendlyError(e), "error"); }
+  }
+  async function clearNexusKey() {
+    try { await backend.clearNexusKey(); setNexusAccount(null); setNexus(await backend.nexusStatus()); notify("Nexus Mods key removed."); }
+    catch (e) { notify(friendlyError(e), "error"); }
+  }
+  async function toggleNxmHandler(enabled: boolean) {
+    try {
+      const registered = await backend.setNxmHandler(enabled);
+      setNexus(await backend.nexusStatus());
+      notify(registered ? "This application now handles nxm:// links." : "nxm:// links are no longer handled here.");
+    } catch (e) { notify(friendlyError(e), "error"); }
+  }
   function openExternal(url: string) { if (url) void openUrl(url).catch(e => notify(friendlyError(e), "error")); }
 
   async function runDiagnostics() { setLoading(true); try { setDiagnostics(await backend.diagnostics()); } catch (e) { notify(friendlyError(e), "error"); } finally { setLoading(false); } }
@@ -76,9 +125,9 @@ export default function App() {
   return <Shell page={page} onPage={setPage} gameReady={dashboard.game.detected}>
     {page === "home" && <HomePage data={dashboard} onInstall={() => setPage("install")} onDiagnose={() => setPage("diagnostics")} onLocate={locateGame} openMods={async () => openPath(await backend.managedPath("mods"))} onGetUe4ss={() => openExternal(links.ue4ssDownload)} onInstallUe4ss={() => void installUe4ss()} busy={loading} />}
     {page === "mods" && <ModsPage mods={mods} onBrowseNexus={() => openExternal(links.nexusGame)} busy={busyMod} onInstall={() => setPage("install")} onToggle={toggle} onUninstall={uninstall} onVerify={verify} onOpenInstalled={mod => { const first = mod.files[0]?.destination; if (first) void revealItemInDir(first); }} onOpenSource={mod => void backend.managedPath(`mod:${mod.id}`).then(openPath)} />}
-    {page === "install" && <InstallPage preview={preview} loading={loading} advanced={advanced} onAdvanced={() => setAdvanced(!advanced)} onChooseFile={() => void choose({ filters: [{ name: "Supported mods", extensions: ["zip", "7z", "pak", "utoc", "ucas"] }] })} onChooseFolder={() => void choose({ directory: true })} onInstall={() => void install()} onCancel={() => setPreview(null)} />}
+    {page === "install" && <InstallPage preview={preview} loading={loading} download={download} advanced={advanced} onAdvanced={() => setAdvanced(!advanced)} onChooseFile={() => void choose({ filters: [{ name: "Supported mods", extensions: ["zip", "7z", "pak", "utoc", "ucas"] }] })} onChooseFolder={() => void choose({ directory: true })} onInstall={() => void install()} onCancel={() => setPreview(null)} />}
     {page === "diagnostics" && <DiagnosticsPage report={diagnostics} loading={loading} onRun={() => void runDiagnostics()} onCopy={() => void navigator.clipboard.writeText(diagnostics?.text ?? "").then(() => notify("Diagnostic report copied."))} />}
-    {page === "settings" && <SettingsPage settings={settings} retoc={dashboard.retoc} onChange={setSettings} onSave={() => void saveSettings()} onPickGame={() => void locateGame()} onPickRetoc={async () => { const picked = await open({ multiple: false, title: "Select retoc executable" }); if (typeof picked === "string") setSettings({ ...settings, retocPath: picked }); }} onOpenLogs={() => void backend.managedPath("logs").then(openPath)} onOpenData={() => void backend.managedPath("data").then(openPath)} links={links} onOpenLink={openExternal} />}
+    {page === "settings" && <SettingsPage settings={settings} retoc={dashboard.retoc} onChange={setSettings} onSave={() => void saveSettings()} onPickGame={() => void locateGame()} onPickRetoc={async () => { const picked = await open({ multiple: false, title: "Select retoc executable" }); if (typeof picked === "string") setSettings({ ...settings, retocPath: picked }); }} onOpenLogs={() => void backend.managedPath("logs").then(openPath)} onOpenData={() => void backend.managedPath("data").then(openPath)} links={links} onOpenLink={openExternal} nexus={nexus} nexusAccount={nexusAccount} onSaveNexusKey={saveNexusKey} onClearNexusKey={clearNexusKey} onToggleNxmHandler={toggleNxmHandler} />}
     {toast && <div className={`toast ${toast.kind}`} role="status">{toast.text}</div>}
   </Shell>;
 }

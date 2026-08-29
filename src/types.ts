@@ -25,6 +25,24 @@ export interface Ue4ssInstallReport {
   protonHint: boolean;
 }
 
+export interface NexusAccount {
+  name: string;
+  premium: boolean;
+}
+
+export interface NexusStatus {
+  hasKey: boolean;
+  /** Where the key is held. "database" means plain text, and is surfaced to the user. */
+  storage: "keyring" | "database" | null;
+  handlerRegistered: boolean;
+}
+
+export interface DownloadProgress {
+  name: string;
+  done: number;
+  total: number | null;
+}
+
 export interface Links {
   ue4ssDownload: string;
   nexusGame: string;
