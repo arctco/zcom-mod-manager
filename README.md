@@ -38,12 +38,8 @@ The application ships a restrained tactical dark interface with five primary
 areas: Home, Mods, Install, Diagnostics, and Settings. Release screenshots are
 kept in `docs/screenshots/` when captured from a tagged build.
 
-The palette (ceramic white, maroon-brown linework, 212th orange, and sage and
-coral accents) and the application icon are derived from community clone
-trooper helmet artwork supplied by the project owner. The interface contains no
-extracted game assets. If you fork this project, replace `images/`,
-`src/assets/helmet.png`, and `src-tauri/icons/` with artwork you have the right
-to redistribute.
+The interface contains no extracted game assets. If you fork this project, replace `images/`,
+`src/assets/`, and `src-tauri/icons/` with artwork you have the right to redistribute.
 
 ## Supported Platforms
 
