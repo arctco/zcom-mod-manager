@@ -46,7 +46,7 @@ project's own Z mark, drawn as plain SVG in `src-tauri/icons/app-icon.svg`.
 | Platform | Architecture | Packages |
 | --- | --- | --- |
 | Linux | x86_64 | AppImage and `.deb` |
-| Windows 10/11 | x86_64 | NSIS `.exe` and MSI |
+| Windows 10/11 | x86_64 | NSIS `.exe` installer and portable `.zip` |
 
 Steam Deck/SteamOS should work through the x86_64 Linux AppImage. Add it as a
 non-Steam application if desired. See [Known Limitations](KNOWN_LIMITATIONS.md)
@@ -82,8 +82,13 @@ redistribute UE4SS.
 Download the package for your platform from the GitHub release:
 
 - Linux: make the AppImage executable and run it, or install the `.deb`.
-- Windows: run the NSIS installer or MSI. v0.1.0 community builds are unsigned,
-  so Windows SmartScreen may show a warning. Verify the release checksum and
+- Windows: run the NSIS installer, or extract the portable `.zip` anywhere and
+  run `ZCOM Mod Manager.exe`. Keep `retoc.exe` beside it: the portable build
+  cannot verify or repack IoStore containers without the sidecar. The portable
+  build also assumes the Microsoft Edge WebView2 runtime is already present,
+  which it is on Windows 11 and on Windows 10 machines with current Edge; the
+  installer downloads it when missing. v0.1.0 community builds are unsigned, so
+  Windows SmartScreen may show a warning. Verify the release checksum and
   repository before choosing **Run anyway**.
 
 Release packages include the MIT-licensed retoc 0.1.5 sidecar. 7z files use the
@@ -365,8 +370,8 @@ schema/                      optional community manifest schema
 
 CI builds the production executable on every main-branch push and pull request.
 Tags matching `v*` publish a GitHub release immediately and attach Linux
-AppImage/deb and Windows NSIS/MSI artifacts. The release is not a draft, so
-smoke-test both platforms before tagging.
+AppImage/deb and Windows NSIS installer/portable zip artifacts. The release is
+not a draft, so smoke-test both platforms before tagging.
 
 ```bash
 git tag -s v0.1.1 -m "ZCOM Mod Manager 0.1.1"

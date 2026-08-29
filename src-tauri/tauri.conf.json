@@ -26,7 +26,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "appimage", "nsis", "msi"],
+    "targets": ["deb", "appimage", "nsis"],
     "category": "Utility",
     "shortDescription": "Safe mod management for Star Wars: Zero Company",
     "longDescription": "A dedicated open-source mod manager with Steam discovery, IoStore verification, UE4SS support, conflicts, and checksum-safe deployment.",

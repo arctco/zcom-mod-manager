@@ -16,7 +16,7 @@ jobs:
           - os: ubuntu-24.04
             args: --bundles appimage,deb
           - os: windows-2025
-            args: --bundles nsis,msi
+            args: --bundles nsis
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -52,6 +52,26 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+      - name: Package portable Windows zip
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $release = "src-tauri/target/release"
+          $exe = Get-Item (Join-Path $release "ZCOM Mod Manager.exe")
+          $retoc = Get-ChildItem $release -Filter "retoc*.exe" | Select-Object -First 1
+          if (-not $retoc) { throw "retoc sidecar not found in $release" }
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          $stage = Join-Path $env:RUNNER_TEMP "portable"
+          Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item $exe.FullName $stage
+          Copy-Item $retoc.FullName (Join-Path $stage "retoc.exe")
+          Copy-Item LICENSE, README.md, THIRD_PARTY_NOTICES.md $stage
+          $asset = Join-Path $env:RUNNER_TEMP "ZCOM.Mod.Manager_${version}_x64-portable.zip"
+          Compress-Archive -Path "$stage/*" -DestinationPath $asset -Force
+          gh release upload "${{ github.ref_name }}" "$asset" --clobber
       - name: Repack AppImage without host-provided Wayland libraries
         if: runner.os == 'Linux'
         env:
