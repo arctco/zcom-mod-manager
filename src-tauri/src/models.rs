@@ -46,6 +46,17 @@ pub struct Ue4ssInfo {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Ue4ssInstallReport {
+    /// Number of runtime files written into `Binaries/Win64`.
+    pub installed: usize,
+    /// Existing user-owned files that were kept instead of being overwritten.
+    pub preserved: Vec<String>,
+    /// Whether the Steam launch-option reminder applies to this platform.
+    pub proton_hint: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Dashboard {

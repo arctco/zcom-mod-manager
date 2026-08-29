@@ -19,6 +19,18 @@ export interface Ue4ssInfo {
   message: string | null;
 }
 
+export interface Ue4ssInstallReport {
+  installed: number;
+  preserved: string[];
+  protonHint: boolean;
+}
+
+export interface Links {
+  ue4ssDownload: string;
+  nexusGame: string;
+  project: string;
+}
+
 export interface Dashboard {
   game: GameInfo;
   installedMods: number;

@@ -3,5 +3,17 @@
   "identifier": "default",
   "description": "Capabilities for the main desktop window",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open", "opener:allow-open-path", "opener:allow-reveal-item-in-dir"]
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "opener:allow-open-path",
+    "opener:allow-reveal-item-in-dir",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://www.nexusmods.com/**" },
+        { "url": "https://github.com/zcom-modding/**" }
+      ]
+    }
+  ]
 }

@@ -1,10 +1,14 @@
-# Known Limitations — 0.1.0
+# Known Limitations — 0.1.1
 
 - 7z installation uses the open-source 7-Zip command-line program available on
   the host. ZIP support is built in. A missing `7z` produces setup guidance.
-- UE4SS is detected and Lua mods are managed, but UE4SS itself is not downloaded
-  or installed because a Zero Company-compatible distribution and its terms
-  must be chosen by the user.
+- UE4SS can be installed from a package the user downloaded, but it is never
+  downloaded automatically. Nexus Mods does not issue download links to
+  anonymous clients, so an automatic fetch needs `nxm://` handoff or a personal
+  Nexus API key; both are deferred to 0.3.
+- UE4SS installation preserves `ue4ss/Mods/` and `ue4ss/UE4SS-settings.ini`. A
+  package that ships a newer default `UE4SS-settings.ini` will not replace an
+  existing one; remove yours first if you want the shipped defaults.
 - Steam launch options are inspected heuristically and never edited. On Linux,
   confirm `WINEDLLOVERRIDES="dwmapi=n,b" %command%` manually.
 - retoc can verify only containers supported by retoc 0.1.5. Encrypted or future
@@ -13,6 +17,7 @@
   filename collision is available for them.
 - Package load order and full profiles are intentionally deferred to 0.2.
 - Nexus API/download integration is intentionally deferred to 0.3.
+- Installed mods are not checked against Nexus for newer versions.
 - Release builds are unsigned. SmartScreen may warn on Windows.
 - Flatpak/Snap sandbox permissions and uncommon portable Steam installations
   may require manual game-path selection.

@@ -80,6 +80,8 @@ pub fn run() {
             commands::set_mod_enabled,
             commands::uninstall_mod,
             commands::verify_mod,
+            commands::install_ue4ss,
+            commands::get_links,
             commands::run_diagnostics,
             commands::diagnostic_report,
             commands::get_settings,

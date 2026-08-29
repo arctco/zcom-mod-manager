@@ -88,7 +88,14 @@ pub fn run(
         } else {
             "Not installed (optional)".into()
         },
-        ue4ss.message.clone(),
+        ue4ss.message.clone().or_else(|| {
+            (!ue4ss.installed).then(|| {
+                format!(
+                    "Only needed for Lua mods. Get the tested Zero Company build from {}, then use Home to install it.",
+                    crate::ue4ss::DOWNLOAD_URL
+                )
+            })
+        }),
     ));
     if game.compat_data_path.is_some() {
         items.push(item("Proton compatibility prefix", "good", "Found", None));

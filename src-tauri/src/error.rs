@@ -22,6 +22,8 @@ pub enum AppError {
     RetocNotFound,
     #[error("UE4SS is not installed or its layout is incomplete.")]
     Ue4ssNotFound,
+    #[error("That archive does not contain a UE4SS runtime. Expected dwmapi.dll next to a ue4ss folder.")]
+    Ue4ssPackageNotRecognized,
     #[error("A different file already exists at {0}. It was not overwritten.")]
     DeploymentConflict(PathBuf),
     #[error("A managed file changed outside ZCOM Mod Manager: {0}")]

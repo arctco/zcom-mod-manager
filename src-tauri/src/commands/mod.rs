@@ -163,6 +163,48 @@ pub fn uninstall_mod(id: String, force: bool, ctx: State<'_, AppContext>) -> Res
 pub fn verify_mod(id: String, ctx: State<'_, AppContext>) -> Result<String> {
     deployment::verify(&connection(&ctx)?, &id)
 }
+
+/// Installs a user-downloaded UE4SS package. Nothing is fetched from the
+/// network: the user supplies the archive, and it is staged in the same
+/// sandbox that mod archives use before any file reaches the game folder.
+#[tauri::command]
+pub fn install_ue4ss(
+    path: String,
+    ctx: State<'_, AppContext>,
+) -> Result<crate::models::Ue4ssInstallReport> {
+    let (_, game_path) = require_game(&ctx)?;
+    let report = ue4ss::install_from(Path::new(&path), &game_path, &ctx.cache_dir)?;
+    log(
+        &ctx,
+        "info",
+        "ue4ss_installed",
+        &format!(
+            "files={} preserved={}",
+            report.installed,
+            report.preserved.len()
+        ),
+    );
+    Ok(report)
+}
+
+/// External resources the interface links to. Kept on this side so the
+/// download target has a single definition shared with diagnostics.
+#[tauri::command]
+pub fn get_links() -> Links {
+    Links {
+        ue4ss_download: ue4ss::DOWNLOAD_URL.into(),
+        nexus_game: "https://www.nexusmods.com/games/starwarszerocompany/mods".into(),
+        project: "https://github.com/zcom-modding/zcom-mod-manager".into(),
+    }
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Links {
+    pub ue4ss_download: String,
+    pub nexus_game: String,
+    pub project: String,
+}
 #[tauri::command]
 pub fn run_diagnostics(ctx: State<'_, AppContext>) -> Result<DiagnosticReport> {
     let conn = connection(&ctx)?;

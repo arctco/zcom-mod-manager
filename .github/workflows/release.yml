@@ -48,7 +48,7 @@ jobs:
           projectPath: .
           tagName: ${{ github.ref_name }}
           releaseName: ZCOM Mod Manager ${{ github.ref_name }}
-          releaseBody: See CHANGELOG.md for release notes. Builds are unsigned for v0.1.0.
+          releaseBody: See CHANGELOG.md for release notes. Community builds are unsigned.
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

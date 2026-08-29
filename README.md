@@ -24,6 +24,7 @@ records SHA-256 ownership, and treats Linux/Proton as a first-class platform.
 - Filename and hashed IoStore package conflict detection
 - Optional spoiler-sensitive package paths, disabled by default
 - UE4SS layout checks and formatting-preserving `mods.txt` updates
+- Guided UE4SS runtime installation from a package you downloaded yourself
 - Linux compatdata and Proton DLL-override diagnostics
 - Sanitized structured logs and a copyable Mod Doctor report
 - No account, network requirement, telemetry, analytics, or advertisements
@@ -32,8 +33,14 @@ records SHA-256 ownership, and treats Linux/Proton as a first-class platform.
 
 The application ships a restrained tactical dark interface with five primary
 areas: Home, Mods, Install, Diagnostics, and Settings. Release screenshots are
-kept in `docs/screenshots/` when captured from a tagged build; the UI itself
-contains no copyrighted game art, logos, or extracted assets.
+kept in `docs/screenshots/` when captured from a tagged build.
+
+The palette (ceramic white, maroon-brown linework, 212th orange, and sage and
+coral accents) and the application icon are derived from community clone
+trooper helmet artwork supplied by the project owner. The interface contains no
+extracted game assets. If you fork this project, replace `images/`,
+`src/assets/helmet.png`, and `src-tauri/icons/` with artwork you have the right
+to redistribute.
 
 ## Supported Platforms
 
@@ -155,9 +162,37 @@ SWZeroCompany/Binaries/Win64/
     └── Mods/
 ```
 
-Install a compatible UE4SS build yourself, then restart diagnostics. The
-manager detects incomplete layouts and never downloads or executes a mod
-installer.
+UE4SS is only needed by mods that require it. Many Zero Company mods are plain
+IoStore or PAK payloads and work without it.
+
+### Getting UE4SS
+
+**Home → Runtime readiness → UE4SS runtime** offers two actions:
+
+1. **Get the tested build on Nexus Mods** opens
+   <https://www.nexusmods.com/starwarszerocompany/mods/9> in your browser. That
+   page hosts the UE4SS build tested against Zero Company.
+2. **Install from downloaded package…** takes the ZIP or 7z you downloaded and
+   unpacks it into `SWZeroCompany/Binaries/Win64`.
+
+The archive goes through the same sandbox as mod archives: absolute paths, `..`
+traversal, and symbolic links are rejected, and nothing is executed. On a
+reinstall or upgrade, files you own are preserved rather than overwritten:
+
+- everything under `ue4ss/Mods/`, including `mods.txt` and your Lua mods
+- `ue4ss/UE4SS-settings.ini`
+
+The manager reports how many files it wrote and which it kept. To adopt a new
+shipped `UE4SS-settings.ini`, rename or delete your copy and install again.
+
+### Why there is no automatic download
+
+ZCOM Mod Manager never fetches mod content over the network. Nexus Mods does not
+serve direct download links to anonymous clients; a manager gets one either from
+the site's `nxm://` handoff (the **Mod Manager Download** button) or from the
+Nexus API with a personal API key. Both require account credentials and are
+tracked for 0.3 — see [Roadmap](#roadmap). Until then the flow above is one
+click to the download page and one click to install what you downloaded.
 
 ## Linux / Proton
 
@@ -267,21 +302,23 @@ schema/                      optional community manifest schema
 ## Release Builds
 
 CI builds the production executable on every main-branch push and pull request.
-Tags matching `v*` create a draft GitHub release and attach Linux AppImage/deb
-and Windows NSIS/MSI artifacts.
+Tags matching `v*` publish a GitHub release immediately and attach Linux
+AppImage/deb and Windows NSIS/MSI artifacts. The release is not a draft, so
+smoke-test both platforms before tagging.
 
 ```bash
-git tag -s v0.1.0 -m "ZCOM Mod Manager 0.1.0"
-git push origin v0.1.0
+git tag -s v0.1.1 -m "ZCOM Mod Manager 0.1.1"
+git push origin v0.1.1
 ```
 
-Review the draft, confirm checksums and smoke-test both platforms, then publish.
-See [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) before release.
+Confirm checksums after the run finishes. See
+[KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) before release.
 
 ## Roadmap
 
-- **0.2:** profiles, load-order tools, assisted UE4SS setup, dependency metadata
-- **0.3:** opt-in Nexus API integration and community update metadata
+- **0.2:** profiles, load-order tools, dependency metadata, mod update checks
+- **0.3:** opt-in Nexus API integration with a user-supplied key, and `nxm://`
+  protocol handling so **Mod Manager Download** on Nexus hands off to this app
 - **Future / separate project:** ZCOM Mod Studio for asset inspection and authoring
 
 ## Contributing

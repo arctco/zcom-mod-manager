@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { openPath, openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
+import helmet from "./assets/helmet.png";
 import { Shell, type Page } from "./components/Shell";
 import { DiagnosticsPage } from "./pages/DiagnosticsPage";
 import { HomePage } from "./pages/HomePage";
@@ -10,15 +11,17 @@ import { InstallPage } from "./pages/InstallPage";
 import { ModsPage } from "./pages/ModsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { backend, friendlyError } from "./services/backend";
-import type { AppSettings, Dashboard, DiagnosticReport, ModPreview, ModSummary } from "./types";
+import type { AppSettings, Dashboard, DiagnosticReport, Links, ModPreview, ModSummary } from "./types";
 
 const defaultSettings: AppSettings = { gamePath: null, retocPath: null, logLevel: "normal", advancedPackageNames: false, reducedMotion: false };
+const defaultLinks: Links = { ue4ssDownload: "", nexusGame: "", project: "" };
 
 export default function App() {
   const [page, setPage] = useState<Page>("home");
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [mods, setMods] = useState<ModSummary[]>([]);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+  const [links, setLinks] = useState<Links>(defaultLinks);
   const [preview, setPreview] = useState<ModPreview | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticReport | null>(null);
   const [loading, setLoading] = useState(false);
@@ -29,8 +32,8 @@ export default function App() {
   const notify = (text: string, kind: "ok" | "error" = "ok") => { setToast({ text, kind }); window.setTimeout(() => setToast(null), 4500); };
   const refresh = useCallback(async () => {
     try {
-      const [nextDashboard, nextMods, nextSettings] = await Promise.all([backend.dashboard(), backend.mods(), backend.settings()]);
-      setDashboard(nextDashboard); setMods(nextMods); setSettings(nextSettings);
+      const [nextDashboard, nextMods, nextSettings, nextLinks] = await Promise.all([backend.dashboard(), backend.mods(), backend.settings(), backend.links()]);
+      setDashboard(nextDashboard); setMods(nextMods); setSettings(nextSettings); setLinks(nextLinks);
       document.documentElement.dataset.reduceMotion = String(nextSettings.reducedMotion);
     } catch (error) { notify(friendlyError(error), "error"); }
   }, []);
@@ -52,16 +55,30 @@ export default function App() {
   async function toggle(mod: ModSummary) { setBusyMod(mod.id); try { await backend.setEnabled(mod.id, !mod.enabled); await refresh(); notify(`${mod.name} ${mod.enabled ? "disabled" : "enabled"}.`); } catch (e) { notify(friendlyError(e), "error"); } finally { setBusyMod(null); } }
   async function uninstall(mod: ModSummary) { if (!window.confirm(`Uninstall ${mod.name}? Its managed library copy and unchanged deployed files will be removed.`)) return; setBusyMod(mod.id); try { await backend.uninstall(mod.id); await refresh(); notify(`${mod.name} uninstalled.`); } catch (e) { notify(`${friendlyError(e)} The changed file was kept.`, "error"); } finally { setBusyMod(null); } }
   async function verify(mod: ModSummary) { setBusyMod(mod.id); try { notify(await backend.verify(mod.id)); } catch (e) { notify(friendlyError(e), "error"); } finally { setBusyMod(null); } }
+  async function installUe4ss() {
+    const picked = await open({ multiple: false, title: "Select the downloaded UE4SS package", filters: [{ name: "UE4SS package", extensions: ["zip", "7z"] }] });
+    if (typeof picked !== "string") return;
+    setLoading(true);
+    try {
+      const report = await backend.installUe4ss(picked);
+      const kept = report.preserved.length ? ` ${report.preserved.length} existing file${report.preserved.length === 1 ? "" : "s"} kept (${report.preserved.join(", ")}).` : "";
+      const proton = report.protonHint ? ' Add WINEDLLOVERRIDES="dwmapi=n,b" %command% to the game\u2019s Steam launch options.' : "";
+      await refresh();
+      notify(`UE4SS runtime installed: ${report.installed} file${report.installed === 1 ? "" : "s"}.${kept}${proton}`);
+    } catch (e) { notify(friendlyError(e), "error"); } finally { setLoading(false); }
+  }
+  function openExternal(url: string) { if (url) void openUrl(url).catch(e => notify(friendlyError(e), "error")); }
+
   async function runDiagnostics() { setLoading(true); try { setDiagnostics(await backend.diagnostics()); } catch (e) { notify(friendlyError(e), "error"); } finally { setLoading(false); } }
   async function saveSettings() { try { await backend.saveSettings(settings); await refresh(); notify("Settings saved."); } catch (e) { notify(friendlyError(e), "error"); } }
 
-  if (!dashboard) return <div className="splash"><span className="brand-mark">ZC</span><p>Preparing your mod library…</p></div>;
+  if (!dashboard) return <div className="splash"><img className="brand-mark" src={helmet} alt="" width={96} height={96} /><p>Preparing your mod library…</p></div>;
   return <Shell page={page} onPage={setPage} gameReady={dashboard.game.detected}>
-    {page === "home" && <HomePage data={dashboard} onInstall={() => setPage("install")} onDiagnose={() => setPage("diagnostics")} onLocate={locateGame} openMods={async () => openPath(await backend.managedPath("mods"))} />}
-    {page === "mods" && <ModsPage mods={mods} busy={busyMod} onInstall={() => setPage("install")} onToggle={toggle} onUninstall={uninstall} onVerify={verify} onOpenInstalled={mod => { const first = mod.files[0]?.destination; if (first) void revealItemInDir(first); }} onOpenSource={mod => void backend.managedPath(`mod:${mod.id}`).then(openPath)} />}
+    {page === "home" && <HomePage data={dashboard} onInstall={() => setPage("install")} onDiagnose={() => setPage("diagnostics")} onLocate={locateGame} openMods={async () => openPath(await backend.managedPath("mods"))} onGetUe4ss={() => openExternal(links.ue4ssDownload)} onInstallUe4ss={() => void installUe4ss()} busy={loading} />}
+    {page === "mods" && <ModsPage mods={mods} onBrowseNexus={() => openExternal(links.nexusGame)} busy={busyMod} onInstall={() => setPage("install")} onToggle={toggle} onUninstall={uninstall} onVerify={verify} onOpenInstalled={mod => { const first = mod.files[0]?.destination; if (first) void revealItemInDir(first); }} onOpenSource={mod => void backend.managedPath(`mod:${mod.id}`).then(openPath)} />}
     {page === "install" && <InstallPage preview={preview} loading={loading} advanced={advanced} onAdvanced={() => setAdvanced(!advanced)} onChooseFile={() => void choose({ filters: [{ name: "Supported mods", extensions: ["zip", "7z", "pak", "utoc", "ucas"] }] })} onChooseFolder={() => void choose({ directory: true })} onInstall={() => void install()} onCancel={() => setPreview(null)} />}
     {page === "diagnostics" && <DiagnosticsPage report={diagnostics} loading={loading} onRun={() => void runDiagnostics()} onCopy={() => void navigator.clipboard.writeText(diagnostics?.text ?? "").then(() => notify("Diagnostic report copied."))} />}
-    {page === "settings" && <SettingsPage settings={settings} retoc={dashboard.retoc} onChange={setSettings} onSave={() => void saveSettings()} onPickGame={() => void locateGame()} onPickRetoc={async () => { const picked = await open({ multiple: false, title: "Select retoc executable" }); if (typeof picked === "string") setSettings({ ...settings, retocPath: picked }); }} onOpenLogs={() => void backend.managedPath("logs").then(openPath)} onOpenData={() => void backend.managedPath("data").then(openPath)} />}
+    {page === "settings" && <SettingsPage settings={settings} retoc={dashboard.retoc} onChange={setSettings} onSave={() => void saveSettings()} onPickGame={() => void locateGame()} onPickRetoc={async () => { const picked = await open({ multiple: false, title: "Select retoc executable" }); if (typeof picked === "string") setSettings({ ...settings, retocPath: picked }); }} onOpenLogs={() => void backend.managedPath("logs").then(openPath)} onOpenData={() => void backend.managedPath("data").then(openPath)} links={links} onOpenLink={openExternal} />}
     {toast && <div className={`toast ${toast.kind}`} role="status">{toast.text}</div>}
   </Shell>;
 }
