@@ -6,9 +6,12 @@
   downloaded automatically. Nexus Mods does not issue download links to
   anonymous clients, so an automatic fetch needs `nxm://` handoff or a personal
   Nexus API key; both are deferred to 0.3.
-- UE4SS installation preserves `ue4ss/Mods/` and `ue4ss/UE4SS-settings.ini`. A
-  package that ships a newer default `UE4SS-settings.ini` will not replace an
-  existing one; remove yours first if you want the shipped defaults.
+- UE4SS installation preserves `UE4SS-settings.ini`, `mods.txt`, `mods.json`,
+  and every `load_order.txt`. A package shipping newer defaults for those will
+  not replace an existing copy; remove yours first to adopt them.
+- Lua mods bundled inside a UE4SS package are treated as part of the runtime
+  and are overwritten on upgrade. Edits to a shipped mod's scripts are lost;
+  copy it under a new folder name to keep changes.
 - Steam launch options are inspected heuristically and never edited. On Linux,
   confirm `WINEDLLOVERRIDES="dwmapi=n,b" %command%` manually.
 - retoc can verify only containers supported by retoc 0.1.5. Encrypted or future

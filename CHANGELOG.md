@@ -2,6 +2,15 @@
 
 All notable changes are documented here.
 
+## Unreleased
+
+- Fixed UE4SS upgrades leaving runtime-supplied Lua mods at their old version.
+  Only `UE4SS-settings.ini`, `mods.txt`, `mods.json`, and `load_order.txt` are
+  preserved now; mods a package ships move with the runtime, and mods the user
+  installed are untouched because a package never contains them.
+- Added an opt-in test that runs the installer against a real published UE4SS
+  package via `ZCOM_UE4SS_ARCHIVE`.
+
 ## 0.1.1
 
 - Added a guided UE4SS runtime installer that unpacks a user-downloaded package

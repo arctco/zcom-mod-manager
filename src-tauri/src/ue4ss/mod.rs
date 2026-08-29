@@ -12,15 +12,25 @@ use walkdir::WalkDir;
 /// The community UE4SS build that is tested against Star Wars: Zero Company.
 pub const DOWNLOAD_URL: &str = "https://www.nexusmods.com/starwarszerocompany/mods/9";
 
-/// Paths under `Binaries/Win64` that hold user data and are never overwritten by
-/// an installation or upgrade: Lua mods, the load-order file, and the tuned
-/// runtime configuration.
+/// Files under `Binaries/Win64` that the user edits and that a UE4SS package
+/// also ships, so they must survive an upgrade: the runtime configuration and
+/// the load-order lists.
+///
+/// This deliberately does not cover all of `ue4ss/Mods/`. A package ships its
+/// own Lua mods (BPModLoaderMod, ConsoleCommandsMod, and friends) that belong
+/// to the runtime and have to move with it, or an upgraded `UE4SS.dll` ends up
+/// paired with stale scripts. Lua mods the user installed are safe without a
+/// rule: they are not in the package, and files that are not in the package are
+/// never touched.
 fn is_user_owned(relative: &Path) -> bool {
     let normalized = relative
         .to_string_lossy()
         .replace('\\', "/")
         .to_ascii_lowercase();
-    normalized.starts_with("ue4ss/mods/") || normalized == "ue4ss/ue4ss-settings.ini"
+    matches!(
+        normalized.as_str(),
+        "ue4ss/ue4ss-settings.ini" | "ue4ss/mods/mods.txt" | "ue4ss/mods/mods.json"
+    ) || (normalized.starts_with("ue4ss/mods/") && normalized.ends_with("/load_order.txt"))
 }
 
 pub fn base(game: &Path) -> PathBuf {
@@ -218,10 +228,19 @@ mod tests {
         write(&package.join("ue4ss/UE4SS.dll"), "core");
         write(&package.join("ue4ss/UE4SS-settings.ini"), "shipped");
         write(&package.join("ue4ss/Mods/mods.txt"), "Shipped : 1\n");
+        write(
+            &package.join("ue4ss/Mods/ShippedMod/Scripts/main.lua"),
+            "new",
+        );
         let game = d.path().join("game");
         let win64 = base(&game);
         write(&win64.join("ue4ss/Mods/mods.txt"), "MyMod : 1\n");
         write(&win64.join("ue4ss/UE4SS-settings.ini"), "mine");
+        write(
+            &win64.join("ue4ss/Mods/ShippedMod/Scripts/main.lua"),
+            "stale",
+        );
+        write(&win64.join("ue4ss/Mods/MyMod/Scripts/main.lua"), "mine");
 
         let report = install_staged(d.path().join("pkg").as_path(), &game).unwrap();
 
@@ -235,8 +254,94 @@ mod tests {
             fs::read_to_string(win64.join("ue4ss/UE4SS-settings.ini")).unwrap(),
             "mine"
         );
-        assert_eq!(report.installed, 2);
+        assert_eq!(
+            fs::read_to_string(win64.join("ue4ss/Mods/ShippedMod/Scripts/main.lua")).unwrap(),
+            "new",
+            "a Lua mod the package ships is part of the runtime"
+        );
+        assert_eq!(
+            fs::read_to_string(win64.join("ue4ss/Mods/MyMod/Scripts/main.lua")).unwrap(),
+            "mine",
+            "a Lua mod the package does not ship is never touched"
+        );
+        assert_eq!(report.installed, 3);
         assert_eq!(report.preserved.len(), 2);
+    }
+
+    /// End-to-end check against a real published UE4SS package, which no CI
+    /// runner may download. Point `ZCOM_UE4SS_ARCHIVE` at a package from
+    /// <https://www.nexusmods.com/starwarszerocompany/mods/9> and run
+    /// `cargo test -- --ignored` to exercise a fresh install followed by an
+    /// upgrade over user content.
+    #[test]
+    #[ignore = "requires a locally downloaded UE4SS package"]
+    fn installs_a_published_package_over_user_content() {
+        let Some(archive) = std::env::var_os("ZCOM_UE4SS_ARCHIVE") else {
+            panic!("set ZCOM_UE4SS_ARCHIVE to a downloaded UE4SS package")
+        };
+        let archive = PathBuf::from(archive);
+        let d = tempdir().unwrap();
+        let game = d.path().join("game");
+        let win64 = base(&game);
+        fs::create_dir_all(&win64).unwrap();
+
+        let fresh = install_from(&archive, &game, d.path()).unwrap();
+        assert!(win64.join("dwmapi.dll").is_file());
+        assert!(win64.join("ue4ss/UE4SS.dll").is_file());
+        assert!(win64.join("ue4ss/Mods/mods.txt").is_file());
+        assert!(fresh.preserved.is_empty(), "nothing exists yet to preserve");
+        assert!(fresh.installed > 10, "expected a full runtime payload");
+
+        // Simulate a user who tuned the runtime and added their own Lua mod.
+        write(&win64.join("ue4ss/UE4SS-settings.ini"), "; mine");
+        write(&win64.join("ue4ss/Mods/mods.txt"), "MyMod : 1\n");
+        write(&win64.join("ue4ss/Mods/MyMod/Scripts/main.lua"), "-- mine");
+        write(
+            &win64.join("ue4ss/Mods/ConsoleCommandsMod/Scripts/main.lua"),
+            "-- stale",
+        );
+
+        let upgrade = install_from(&archive, &game, d.path()).unwrap();
+        assert_eq!(
+            fs::read_to_string(win64.join("ue4ss/UE4SS-settings.ini")).unwrap(),
+            "; mine",
+            "tuned configuration must survive"
+        );
+        assert_eq!(
+            fs::read_to_string(win64.join("ue4ss/Mods/mods.txt")).unwrap(),
+            "MyMod : 1\n",
+            "load order must survive"
+        );
+        assert_eq!(
+            fs::read_to_string(win64.join("ue4ss/Mods/MyMod/Scripts/main.lua")).unwrap(),
+            "-- mine",
+            "a Lua mod absent from the package must never be touched"
+        );
+        assert_ne!(
+            fs::read_to_string(win64.join("ue4ss/Mods/ConsoleCommandsMod/Scripts/main.lua"))
+                .unwrap(),
+            "-- stale",
+            "runtime-supplied Lua mods must move with the runtime"
+        );
+        // The published package ships every file the preserve rule covers, so
+        // an upgrade over a configured install keeps exactly these four.
+        let preserved: Vec<String> = upgrade
+            .preserved
+            .iter()
+            .map(|path| path.replace('\\', "/"))
+            .collect();
+        for expected in [
+            "ue4ss/UE4SS-settings.ini",
+            "ue4ss/Mods/mods.txt",
+            "ue4ss/Mods/mods.json",
+        ] {
+            assert!(preserved.iter().any(|p| p == expected), "{preserved:?}");
+        }
+        assert!(
+            preserved.iter().any(|p| p.ends_with("/load_order.txt")),
+            "{preserved:?}"
+        );
+        assert_eq!(preserved.len(), 4, "{preserved:?}");
     }
 
     #[test]

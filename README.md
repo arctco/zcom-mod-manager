@@ -180,12 +180,19 @@ IoStore or PAK payloads and work without it.
 
 The archive goes through the same sandbox as mod archives: absolute paths, `..`
 traversal, and symbolic links are rejected, and nothing is executed. On a
-reinstall or upgrade, files you own are preserved rather than overwritten:
+reinstall or upgrade, your configuration is preserved rather than overwritten:
 
-- everything under `ue4ss/Mods/`, including `mods.txt` and your Lua mods
 - `ue4ss/UE4SS-settings.ini`
+- `ue4ss/Mods/mods.txt` and `ue4ss/Mods/mods.json`
+- every `load_order.txt` under `ue4ss/Mods/`
 
-The manager reports how many files it wrote and which it kept. To adopt a new
+Lua mods you installed yourself need no rule: a package does not contain them,
+and a file the package does not contain is never touched. Lua mods the package
+*does* ship (`BPModLoaderMod`, `ConsoleCommandsMod`, and friends) belong to the
+runtime and are updated with it, so an upgraded `UE4SS.dll` is never left
+paired with stale scripts.
+
+The manager reports how many files it wrote and which it kept. To adopt a
 shipped `UE4SS-settings.ini`, rename or delete your copy and install again.
 
 ### Why there is no automatic download
@@ -283,6 +290,18 @@ npm test
 cargo test --manifest-path src-tauri/Cargo.toml
 npm run tauri dev
 ```
+
+One test is ignored by default because it needs a real published package that
+CI cannot download. To exercise the UE4SS installer end to end, download a
+package from the mod page above and run:
+
+```bash
+ZCOM_UE4SS_ARCHIVE=/path/to/ue4ss-package.zip \
+  cargo test --manifest-path src-tauri/Cargo.toml -- --ignored
+```
+
+It performs a fresh install, then an upgrade over edited configuration and a
+user-supplied Lua mod, and asserts what is kept and what is replaced.
 
 The application is offline-first. Use synthetic fixtures only—never add game
 assets, package dumps, credentials, SDK dumps, or personal logs.
