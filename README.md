@@ -396,8 +396,9 @@ with real user paths or game data.
 
 ## Credits
 
-Thanks to the Zero Company modding community and to the maintainers of retoc,
-Tauri, React, rusqlite, zip-rs, and the wider open-source ecosystem. Mod logo is not made by me, credits go to lornaka.
+Thanks to the Zero Company modding community and to the maintainers of retoc, Tauri, React, rusqlite, zip-rs, and the wider open-source ecosystem.
+
+The mod manager logo artwork was created by **[lornaka](https://lornaka.tumblr.com/)**. All credit for the artwork goes to them.
 
 ## Third-Party Software
 
