@@ -19,6 +19,10 @@ All notable changes are documented here.
   resolve, and claimed the scheme in `<desktop>-mimeapps.list`, which
   `xdg-mime query` reads before the file `xdg-mime default` writes.
 
+- Restored the original Z application icon, drawn as plain SVG in
+  `src-tauri/icons/app-icon.svg`. The clone trooper helmet artwork used for the
+  0.1.1 icon was withdrawn at the artist's request and is no longer distributed.
+
 - Fixed UE4SS upgrades leaving runtime-supplied Lua mods at their old version.
   Only `UE4SS-settings.ini`, `mods.txt`, `mods.json`, and `load_order.txt` are
   preserved now; mods a package ships move with the runtime, and mods the user

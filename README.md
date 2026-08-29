@@ -1,5 +1,5 @@
 <div align="center">
-  
+  <img src="images/icon.png" alt="" width="160" height="160">
   <h1>ZCOM Mod Manager</h1>
 </div>
 
@@ -38,8 +38,8 @@ The application ships a restrained tactical dark interface with five primary
 areas: Home, Mods, Install, Diagnostics, and Settings. Release screenshots are
 kept in `docs/screenshots/` when captured from a tagged build.
 
-The interface contains no extracted game assets. If you fork this project, replace `images/`,
-`src/assets/`, and `src-tauri/icons/` with artwork you have the right to redistribute.
+The interface contains no extracted game assets. The application icon is the
+project's own Z mark, drawn as plain SVG in `src-tauri/icons/app-icon.svg`.
 
 ## Supported Platforms
 
