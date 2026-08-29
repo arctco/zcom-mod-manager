@@ -2,6 +2,15 @@
 
 All notable changes are documented here.
 
+## 0.1.3
+
+- Added a portable Windows zip to the release artifacts. Extract it anywhere and
+  run `ZCOM Mod Manager.exe`. The bundled `retoc.exe` ships beside it and is
+  detected automatically, so IoStore verification works without configuration.
+  The portable build expects the Microsoft Edge WebView2 runtime to already be
+  installed; the NSIS installer still fetches it when missing.
+- Removed the MSI bundle. NSIS is now the only Windows installer.
+
 ## 0.1.2
 
 - Added the Nexus Mods `nxm://` handoff. **Mod Manager Download** on the website
