@@ -73,6 +73,14 @@ export function NexusPanel({ status, account, onSaveKey, onClearKey, onToggleHan
       Claims the protocol for this application. Leave it off if another mod manager
       should keep it; turning it off hands the association back.
     </small>
+    {status && !status.handlerRegistered && status.handlerProblem && <div className="inline-warning">
+      <AlertTriangle aria-hidden size={17} />{status.handlerProblem}
+    </div>}
+    {status && !status.handlerRegistered && !status.handlerProblem && status.handlerOwner && <div className="inline-warning">
+      <AlertTriangle aria-hidden size={17} />
+      <span><code>nxm://</code> links currently open in <b>{status.handlerOwner}</b>. Enabling the
+      switch above claims them for this application instead.</span>
+    </div>}
 
     <div className="settings-actions">
       <button onClick={() => onOpenLink(API_KEY_PAGE)}><ExternalLink aria-hidden size={16} />Get an API key</button>

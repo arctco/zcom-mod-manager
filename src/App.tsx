@@ -111,9 +111,15 @@ export default function App() {
   }
   async function toggleNxmHandler(enabled: boolean) {
     try {
-      const registered = await backend.setNxmHandler(enabled);
-      setNexus(await backend.nexusStatus());
-      notify(registered ? "This application now handles nxm:// links." : "nxm:// links are no longer handled here.");
+      const next = await backend.setNxmHandler(enabled);
+      setNexus(next);
+      if (next.handlerRegistered) { notify("This application now handles nxm:// links."); return; }
+      if (!enabled) { notify("nxm:// links are no longer handled here."); return; }
+      // Registration was written but the system still resolves elsewhere, so
+      // say what actually holds the protocol rather than claiming success.
+      notify(next.handlerProblem ?? (next.handlerOwner
+        ? `nxm:// links still open in ${next.handlerOwner}.`
+        : "The nxm:// association did not take effect."), "error");
     } catch (e) { notify(friendlyError(e), "error"); }
   }
   function openExternal(url: string) { if (url) void openUrl(url).catch(e => notify(friendlyError(e), "error")); }

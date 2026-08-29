@@ -35,6 +35,10 @@ export interface NexusStatus {
   /** Where the key is held. "database" means plain text, and is surfaced to the user. */
   storage: "keyring" | "database" | null;
   handlerRegistered: boolean;
+  /** The application currently holding nxm://, when it is not this one. */
+  handlerOwner: string | null;
+  /** Why registration cannot take effect on this system, if it cannot. */
+  handlerProblem: string | null;
 }
 
 export interface DownloadProgress {

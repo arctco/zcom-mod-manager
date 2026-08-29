@@ -12,6 +12,9 @@ All notable changes are documented here.
 - Added an opt-in `nxm://` protocol registration toggle; the association is
   never claimed automatically.
 - Links for other games are refused rather than downloaded.
+- Settings names the application currently holding `nxm://` when registration
+  does not take effect, and detects the Linux case where a space in the
+  application path makes `xdg-mime` ignore the association entirely.
 
 - Fixed UE4SS upgrades leaving runtime-supplied Lua mods at their old version.
   Only `UE4SS-settings.ini`, `mods.txt`, `mods.json`, and `load_order.txt` are

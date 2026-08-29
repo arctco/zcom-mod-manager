@@ -288,17 +288,18 @@ pub struct NexusStatus {
     pub has_key: bool,
     pub storage: Option<crate::credentials::Storage>,
     pub handler_registered: bool,
+    /// The application currently handling `nxm://`, when it is not this one.
+    /// Claiming the protocol is a real conflict with whatever held it, so the
+    /// interface names the other application rather than failing quietly.
+    pub handler_owner: Option<String>,
+    /// Why registration cannot take effect on this system, if it cannot.
+    pub handler_problem: Option<String>,
 }
 
 #[tauri::command]
 pub fn nexus_status(app: tauri::AppHandle, ctx: State<'_, AppContext>) -> Result<NexusStatus> {
     let conn = connection(&ctx)?;
-    let storage = crate::credentials::location(&conn);
-    Ok(NexusStatus {
-        has_key: storage.is_some(),
-        storage,
-        handler_registered: nxm_handler_registered(&app),
-    })
+    Ok(nexus_status_for(&app, &conn))
 }
 
 /// Checks the key against Nexus before storing it, so a typo is reported at
@@ -332,11 +333,92 @@ fn nxm_handler_registered(app: &tauri::AppHandle) -> bool {
     app.deep_link().is_registered("nxm").unwrap_or(false)
 }
 
+/// Reads the desktop entry that currently owns `nxm://` and resolves it to a
+/// human name, so the interface can say who holds the protocol.
+#[cfg(target_os = "linux")]
+fn nxm_handler_owner() -> Option<String> {
+    let output = std::process::Command::new("xdg-mime")
+        .args(["query", "default", "x-scheme-handler/nxm"])
+        .output()
+        .ok()?;
+    let entry = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if entry.is_empty() {
+        return None;
+    }
+    let mut roots = vec![dirs::data_dir()?];
+    roots.extend(
+        std::env::var("XDG_DATA_DIRS")
+            .unwrap_or_else(|_| "/usr/local/share:/usr/share".into())
+            .split(':')
+            .map(PathBuf::from),
+    );
+    for root in roots {
+        let candidate = root.join("applications").join(&entry);
+        let Ok(text) = std::fs::read_to_string(&candidate) else {
+            continue;
+        };
+        if let Some(name) = text
+            .lines()
+            .find_map(|line| line.strip_prefix("Name="))
+            .filter(|name| !name.is_empty())
+        {
+            return Some(name.to_string());
+        }
+    }
+    Some(entry)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn nxm_handler_owner() -> Option<String> {
+    None
+}
+
+/// `xdg-mime` resolves a desktop entry by taking the first whitespace-separated
+/// word of `Exec`, so a correctly quoted path containing a space never resolves
+/// and the entry is skipped without any error. Detect that here rather than
+/// letting the toggle appear to do nothing.
+#[cfg(target_os = "linux")]
+fn nxm_handler_problem() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let exe = std::env::var_os("APPIMAGE")
+        .map(PathBuf::from)
+        .unwrap_or(exe);
+    exe.to_string_lossy().contains(' ').then(|| {
+        format!(
+            "The application path contains a space ({}). xdg-mime cannot resolve such a path, \
+             so the association is ignored. Install the .deb, or move the application to a path \
+             without spaces.",
+            exe.display()
+        )
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn nxm_handler_problem() -> Option<String> {
+    None
+}
+
+fn nexus_status_for(app: &tauri::AppHandle, conn: &rusqlite::Connection) -> NexusStatus {
+    let storage = crate::credentials::location(conn);
+    let registered = nxm_handler_registered(app);
+    NexusStatus {
+        has_key: storage.is_some(),
+        storage,
+        handler_registered: registered,
+        handler_owner: (!registered).then(nxm_handler_owner).flatten(),
+        handler_problem: (!registered).then(nxm_handler_problem).flatten(),
+    }
+}
+
 /// Claims or releases the `nxm://` association. Never called on start-up: the
 /// user opts in from Settings so the manager does not quietly take the
 /// protocol away from another mod manager.
 #[tauri::command]
-pub fn set_nxm_handler(enabled: bool, app: tauri::AppHandle) -> Result<bool> {
+pub fn set_nxm_handler(
+    enabled: bool,
+    app: tauri::AppHandle,
+    ctx: State<'_, AppContext>,
+) -> Result<NexusStatus> {
     use tauri_plugin_deep_link::DeepLinkExt;
     let result = if enabled {
         app.deep_link().register("nxm")
@@ -344,7 +426,8 @@ pub fn set_nxm_handler(enabled: bool, app: tauri::AppHandle) -> Result<bool> {
         app.deep_link().unregister("nxm")
     };
     result.map_err(|e| AppError::Other(format!("The nxm:// association could not change: {e}")))?;
-    Ok(nxm_handler_registered(&app))
+    let conn = connection(&ctx)?;
+    Ok(nexus_status_for(&app, &conn))
 }
 
 /// Collects a link that launched the application, exactly once.
