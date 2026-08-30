@@ -17,6 +17,7 @@ records SHA-256 ownership, and treats Linux/Proton as a first-class platform.
 ## Features
 
 - Steam AppID `2075800` discovery across default and additional libraries
+- Steam-aware game launch from the Home page
 - Dynamic Steam build-ID detection and update warnings
 - ZIP, 7z, direct PAK/UTOC/UCAS, folder, picker, and drag-and-drop input
 - Nested archive payload discovery without copying documentation or random data
@@ -31,13 +32,14 @@ records SHA-256 ownership, and treats Linux/Proton as a first-class platform.
 - Guided UE4SS runtime installation from a package you downloaded yourself
 - Linux compatdata and Proton DLL-override diagnostics
 - Sanitized structured logs and a copyable Mod Doctor report
-- No account, network requirement, telemetry, analytics, or advertisements
+- Automatic GitHub release notices with a manual retry on the About page
+- No account or always-on network requirement, telemetry, analytics, or advertisements
 
 ## Screenshots
 
-The application ships a restrained tactical dark interface with five primary
-areas: Home, Mods, Install, Diagnostics, and Settings. Release screenshots are
-kept in `docs/screenshots/` when captured from a tagged build.
+The application ships a restrained tactical dark interface with six primary
+areas: Home, Mods, Install, Diagnostics, Settings, and About. Release
+screenshots are kept in `docs/screenshots/` when captured from a tagged build.
 
 The interface contains no extracted game assets. The application icon is the
 project's own Z mark, drawn as plain SVG in `src-tauri/icons/app-icon.svg`.
@@ -102,6 +104,11 @@ system `7z` command: install `p7zip`/`7zip` if it is not already available.
 3. Open **Install** and drop a downloaded mod archive onto the window.
 4. Review detected files, verification, compatibility, and conflicts.
 5. Choose **Install**.
+
+The manager makes one lightweight request to the project’s latest GitHub
+release endpoint when it opens. If a newer manager release exists, an update
+icon appears beside **About**. Offline failures do not block startup, mod
+management, or game launch.
 
 Instead of manually extracting `.pak`, `.ucas`, and `.utoc` into
 `SWZeroCompany/Content/Paks/~mods`, drop the downloaded archive into the app.
@@ -405,9 +412,10 @@ Confirm checksums after the run finishes. See
 
 ## Roadmap
 
-- **0.2:** conflict-aware packaged-mod load order shipped; profiles, dependency
-  metadata, and mod update checks remain
-- **0.3:** Nexus handoff shipped; update checking against the API still to come
+- **0.2:** conflict-aware packaged-mod load order, Steam launch, and automatic
+  manager release notices shipped; profiles and dependency metadata remain
+- **0.3:** Nexus handoff shipped; Nexus catalog browsing and per-mod update
+  checking still remain
 - **Future / separate project:** ZCOM Mod Studio for asset inspection and authoring
 
 ## Contributing

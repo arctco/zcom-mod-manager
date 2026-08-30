@@ -132,7 +132,8 @@ pub fn run() {
             commands::get_settings,
             commands::save_settings,
             commands::set_game_path,
-            commands::managed_path
+            commands::open_managed_path,
+            commands::launch_game
         ])
         .run(tauri::generate_context!())
         .expect("error while running ZCOM Mod Manager");

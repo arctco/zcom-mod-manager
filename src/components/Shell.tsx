@@ -1,4 +1,4 @@
-import { Activity, CircleHelp, Download, Home, Package, Settings } from "lucide-react";
+import { Activity, CircleArrowUp, CircleHelp, Download, Home, Package, Settings } from "lucide-react";
 import brandMark from "../assets/icon.svg";
 
 export type Page = "home" | "mods" | "install" | "diagnostics" | "settings" | "about";
@@ -8,14 +8,14 @@ const nav: Array<[Page, string, typeof Home]> = [
   ["about", "About", CircleHelp]
 ];
 
-export function Shell({ page, onPage, gameReady, children }: { page: Page; onPage: (page: Page) => void; gameReady: boolean; children: React.ReactNode }) {
+export function Shell({ page, onPage, gameReady, updateAvailable, children }: { page: Page; onPage: (page: Page) => void; gameReady: boolean; updateAvailable: boolean; children: React.ReactNode }) {
   return <div className="shell">
     <aside className="sidebar">
       <button className="brand" onClick={() => onPage("home")} aria-label="ZCOM Mod Manager home">
         <img className="brand-mark" src={brandMark} alt="" width={38} height={38} /><span><b>ZCOM</b><small>MOD MANAGER</small></span>
       </button>
       <nav aria-label="Primary navigation">
-        {nav.map(([id, label, Icon]) => <button key={id} className={page === id ? "active" : ""} aria-current={page === id ? "page" : undefined} onClick={() => onPage(id)}><Icon aria-hidden size={19} />{label}</button>)}
+        {nav.map(([id, label, Icon]) => <button key={id} className={page === id ? "active" : ""} aria-current={page === id ? "page" : undefined} onClick={() => onPage(id)}><Icon aria-hidden size={19} />{label}{id === "about" && updateAvailable && <CircleArrowUp className="nav-update" aria-label="Update available" size={16} />}</button>)}
       </nav>
       <div className="sidebar-status"><span className={gameReady ? "pulse good" : "pulse"} /> <span>{gameReady ? "Game connected" : "Game not found"}</span></div>
       <div className="version">v{__APP_VERSION__}</div>

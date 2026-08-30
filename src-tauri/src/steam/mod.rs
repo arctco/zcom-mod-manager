@@ -11,6 +11,10 @@ use std::{
 
 pub const APP_ID: &str = "2075800";
 
+pub fn launch_url() -> String {
+    format!("steam://run/{APP_ID}")
+}
+
 fn quoted_value(text: &str, key: &str) -> Option<String> {
     let pattern = format!(r#""{}"\s+"([^"]*)""#, regex::escape(key));
     Regex::new(&pattern)
@@ -226,5 +230,10 @@ mod tests {
         assert!(discover_from_roots(&[steam.path().to_path_buf()])
             .unwrap()
             .is_some());
+    }
+
+    #[test]
+    fn launch_url_targets_zero_company_through_steam() {
+        assert_eq!(launch_url(), "steam://run/2075800");
     }
 }

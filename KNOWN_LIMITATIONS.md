@@ -24,7 +24,12 @@
 - PAK-only mods remain visible but non-orderable: the local capability fixture
   did not pass the runtime gate. Their contents are also opaque, so the manager
   cannot identify which assets a PAK-only mod wins or loses.
-- UE4SS mod order and full profiles remain separate future work.
+- UE4SS mod order remains separate future work because UE4SS exposes more than
+  one ordering mechanism: native/Lua startup entries use `mods.txt`, while
+  BPModLoader uses its own `BPModLoaderMod/load_order.txt`. The manager currently
+  preserves those user/runtime-owned files instead of guessing across both
+  systems. A future editor needs runtime-aware parsing and Zero Company tests
+  before it can change either safely. Full profiles also remain future work.
 - Installed mods are not checked against Nexus for newer versions yet.
 - Downloads must be started from the Nexus Mods website. A non-premium account
   cannot obtain a download link from the API without the website-minted key, so

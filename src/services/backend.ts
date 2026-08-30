@@ -26,7 +26,8 @@ export const backend = {
   saveSettings: (settings: AppSettings) => invoke<void>("save_settings", { settings }),
   setGamePath: (path: string) => invoke<GameInfo>("set_game_path", { path }),
   copyDiagnostics: () => invoke<string>("diagnostic_report"),
-  managedPath: (kind: "mods" | "logs" | "data" | `mod:${string}`) => invoke<string>("managed_path", { kind })
+  openManagedPath: (kind: "game" | "mods" | "logs" | "data" | `mod:${string}` | `installed:${string}`) => invoke<void>("open_managed_path", { kind }),
+  launchGame: () => invoke<void>("launch_game")
 };
 
 interface GameInfo {

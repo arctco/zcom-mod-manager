@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { openPath, openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import brandMark from "./assets/icon.svg";
 import { Shell, type Page } from "./components/Shell";
 import { DiagnosticsPage } from "./pages/DiagnosticsPage";
@@ -12,7 +12,7 @@ import { ModsPage } from "./pages/ModsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { AboutPage } from "./pages/AboutPage";
 import { backend, friendlyError } from "./services/backend";
-import type { AppSettings, Dashboard, DiagnosticReport, DownloadProgress, Links, LoadOrderPreview, LoadOrderState, ModPreview, ModSummary, NexusAccount, NexusStatus } from "./types";
+import type { AppSettings, Dashboard, DiagnosticReport, DownloadProgress, Links, LoadOrderPreview, LoadOrderState, ModPreview, ModSummary, NexusAccount, NexusStatus, UpdateInfo } from "./types";
 
 const defaultSettings: AppSettings = { gamePath: null, retocPath: null, logLevel: "normal", advancedPackageNames: false, reducedMotion: false };
 const defaultLinks: Links = { ue4ssDownload: "", nexusGame: "", project: "" };
@@ -34,8 +34,13 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [busyMod, setBusyMod] = useState<string | null>(null);
   const [orderBusy, setOrderBusy] = useState(false);
+  const [launching, setLaunching] = useState(false);
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
   const [advanced, setAdvanced] = useState(false);
   const [toast, setToast] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const updateCheckStarted = useRef(false);
 
   const notify = (text: string, kind: "ok" | "error" = "ok") => { setToast({ text, kind }); window.setTimeout(() => setToast(null), 4500); };
   const refresh = useCallback(async () => {
@@ -47,6 +52,11 @@ export default function App() {
   }, []);
 
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    if (updateCheckStarted.current) return;
+    updateCheckStarted.current = true;
+    void checkUpdates(false);
+  }, []);
   useEffect(() => {
     let stop: (() => void) | undefined;
     void getCurrentWebview().onDragDropEvent(event => {
@@ -133,15 +143,37 @@ export default function App() {
 
   async function runDiagnostics() { setLoading(true); try { setDiagnostics(await backend.diagnostics()); } catch (e) { notify(friendlyError(e), "error"); } finally { setLoading(false); } }
   async function saveSettings() { try { await backend.saveSettings(settings); await refresh(); notify("Settings saved."); } catch (e) { notify(friendlyError(e), "error"); } }
+  async function openFolder(kind: Parameters<typeof backend.openManagedPath>[0]) {
+    try { await backend.openManagedPath(kind); }
+    catch (e) { notify(friendlyError(e), "error"); }
+  }
+  async function launchGame() {
+    setLaunching(true);
+    try { await backend.launchGame(); notify("Opening Zero Company in Steam."); }
+    catch (e) { notify(friendlyError(e), "error"); }
+    finally { setLaunching(false); }
+  }
+  async function checkUpdates(announce: boolean) {
+    setUpdateChecking(true); setUpdateError(null);
+    try {
+      const result = await backend.checkForUpdates();
+      setUpdate(result);
+      if (announce) notify(result.updateAvailable ? `Version ${result.latestVersion} is available.` : "ZCOM Mod Manager is up to date.");
+    } catch (e) {
+      const message = friendlyError(e);
+      setUpdateError(message);
+      if (announce) notify(`Couldn’t check GitHub: ${message}`, "error");
+    } finally { setUpdateChecking(false); }
+  }
 
   if (!dashboard) return <div className="splash"><img className="brand-mark" src={brandMark} alt="" width={96} height={96} /><p>Preparing your mod library…</p></div>;
-  return <Shell page={page} onPage={setPage} gameReady={dashboard.game.detected}>
-    {page === "home" && <HomePage data={dashboard} onInstall={() => setPage("install")} onDiagnose={() => setPage("diagnostics")} onLocate={locateGame} openMods={async () => openPath(await backend.managedPath("mods"))} onGetUe4ss={() => openExternal(links.ue4ssDownload)} onInstallUe4ss={() => void installUe4ss()} busy={loading} />}
-    {page === "mods" && <ModsPage mods={mods} loadOrder={loadOrder} orderPreview={orderPreview} orderBusy={orderBusy} onPreviewOrder={ids => void previewOrder(ids)} onApplyOrder={ids => void applyOrder(ids)} onCancelOrder={() => setOrderPreview(null)} onBrowseNexus={() => openExternal(links.nexusGame)} busy={busyMod} onInstall={() => setPage("install")} onToggle={toggle} onUninstall={uninstall} onVerify={verify} onOpenInstalled={mod => { const first = mod.files[0]?.destination; if (first) void revealItemInDir(first); }} onOpenSource={mod => void backend.managedPath(`mod:${mod.id}`).then(openPath)} />}
+  return <Shell page={page} onPage={setPage} gameReady={dashboard.game.detected} updateAvailable={update?.updateAvailable === true}>
+    {page === "home" && <HomePage data={dashboard} onInstall={() => setPage("install")} onDiagnose={() => setPage("diagnostics")} onLocate={locateGame} onOpenMods={() => void openFolder("mods")} onOpenGame={() => void openFolder("game")} onLaunchGame={() => void launchGame()} onGetUe4ss={() => openExternal(links.ue4ssDownload)} onInstallUe4ss={() => void installUe4ss()} busy={loading} launching={launching} />}
+    {page === "mods" && <ModsPage mods={mods} loadOrder={loadOrder} orderPreview={orderPreview} orderBusy={orderBusy} onPreviewOrder={ids => void previewOrder(ids)} onApplyOrder={ids => void applyOrder(ids)} onCancelOrder={() => setOrderPreview(null)} onBrowseNexus={() => openExternal(links.nexusGame)} busy={busyMod} onInstall={() => setPage("install")} onToggle={toggle} onUninstall={uninstall} onVerify={verify} onOpenInstalled={mod => void openFolder(`installed:${mod.id}`)} onOpenSource={mod => void openFolder(`mod:${mod.id}`)} />}
     {page === "install" && <InstallPage preview={preview} loading={loading} download={download} advanced={advanced} onAdvanced={() => setAdvanced(!advanced)} onChooseFile={() => void choose({ filters: [{ name: "Supported mods", extensions: ["zip", "7z", "pak", "utoc", "ucas"] }] })} onChooseFolder={() => void choose({ directory: true })} onInstall={() => void install()} onCancel={() => setPreview(null)} />}
     {page === "diagnostics" && <DiagnosticsPage report={diagnostics} loading={loading} onRun={() => void runDiagnostics()} onCopy={() => void navigator.clipboard.writeText(diagnostics?.text ?? "").then(() => notify("Diagnostic report copied."))} />}
-    {page === "settings" && <SettingsPage settings={settings} retoc={dashboard.retoc} onChange={setSettings} onSave={() => void saveSettings()} onPickGame={() => void locateGame()} onPickRetoc={async () => { const picked = await open({ multiple: false, title: "Select retoc executable" }); if (typeof picked === "string") setSettings({ ...settings, retocPath: picked }); }} onOpenLogs={() => void backend.managedPath("logs").then(openPath)} onOpenData={() => void backend.managedPath("data").then(openPath)} links={links} onOpenLink={openExternal} nexus={nexus} nexusAccount={nexusAccount} onSaveNexusKey={saveNexusKey} onClearNexusKey={clearNexusKey} onToggleNxmHandler={toggleNxmHandler} />}
-    {page === "about" && <AboutPage projectUrl={links.project} onOpenLink={openExternal} />}
+    {page === "settings" && <SettingsPage settings={settings} retoc={dashboard.retoc} onChange={setSettings} onSave={() => void saveSettings()} onPickGame={() => void locateGame()} onPickRetoc={async () => { const picked = await open({ multiple: false, title: "Select retoc executable" }); if (typeof picked === "string") setSettings({ ...settings, retocPath: picked }); }} onOpenLogs={() => void openFolder("logs")} onOpenData={() => void openFolder("data")} links={links} onOpenLink={openExternal} nexus={nexus} nexusAccount={nexusAccount} onSaveNexusKey={saveNexusKey} onClearNexusKey={clearNexusKey} onToggleNxmHandler={toggleNxmHandler} />}
+    {page === "about" && <AboutPage projectUrl={links.project} onOpenLink={openExternal} update={update} checking={updateChecking} error={updateError} onCheckUpdates={() => void checkUpdates(true)} />}
     {toast && <div className={`toast ${toast.kind}`} role="status">{toast.text}</div>}
   </Shell>;
 }

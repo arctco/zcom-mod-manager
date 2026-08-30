@@ -4,6 +4,12 @@ All notable changes are documented here.
 
 ## 0.2.0
 
+- Fixed Home and Settings folder actions by moving trusted path opening behind
+  validated native commands and surfacing failures in the interface.
+- Added a Home-page game launch button that opens Zero Company through Steam,
+  preserving the user’s Steam and Proton launch configuration.
+- GitHub release checks now run once at startup. When a newer release exists,
+  a compact update icon appears beside About; the manual retry remains there.
 - Added a conflict-aware load-order editor for runtime-verified IoStore
   triplets. PAK-only mods and pure IoStore pairs remain visible but gated.
 - Added deterministic numeric `_P` deployment ranks, with the highest row

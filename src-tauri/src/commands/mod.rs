@@ -11,8 +11,10 @@ use crate::{
 use std::{
     path::{Path, PathBuf},
     sync::MutexGuard,
+    time::Duration,
 };
-use tauri::{Manager, State};
+use tauri::{AppHandle, Manager, State};
+use tauri_plugin_opener::OpenerExt;
 
 fn connection(ctx: &AppContext) -> Result<rusqlite::Connection> {
     database::open(&ctx.db_path)
@@ -295,8 +297,8 @@ fn version_is_newer(latest: &str, current: &str) -> bool {
     latest > current
 }
 
-/// Queries the latest published GitHub release only when the user requests it
-/// from About. No background network request is made at application startup.
+/// Queries the latest published GitHub release. The interface calls this once
+/// at startup and also exposes an explicit retry on the About page.
 #[tauri::command]
 pub async fn check_for_updates() -> Result<UpdateInfo> {
     const RELEASE_API: &str =
@@ -304,6 +306,7 @@ pub async fn check_for_updates() -> Result<UpdateInfo> {
     let current_version = env!("CARGO_PKG_VERSION").to_string();
     let response = reqwest::Client::builder()
         .user_agent(format!("zcom-mod-manager/{current_version}"))
+        .timeout(Duration::from_secs(10))
         .build()
         .map_err(|error| AppError::Network(error.to_string()))?
         .get(RELEASE_API)
@@ -364,9 +367,11 @@ pub fn set_game_path(path: String, ctx: State<'_, AppContext>) -> Result<GameInf
     database::set_setting(&connection(&ctx)?, "game_path", &path)?;
     Ok(info)
 }
-#[tauri::command]
-pub fn managed_path(kind: String, ctx: State<'_, AppContext>) -> Result<String> {
+
+fn managed_path_for(kind: &str, ctx: &AppContext) -> Result<PathBuf> {
     let path = if let Some(id) = kind.strip_prefix("mod:") {
+        let conn = connection(ctx)?;
+        database::mod_kind(&conn, id)?;
         let path = ctx.mods_dir.join(id);
         if !path.is_dir() {
             return Err(AppError::Other(
@@ -374,20 +379,55 @@ pub fn managed_path(kind: String, ctx: State<'_, AppContext>) -> Result<String> 
             ));
         }
         path
+    } else if let Some(id) = kind.strip_prefix("installed:") {
+        let conn = connection(ctx)?;
+        database::mod_kind(&conn, id)?;
+        let destination = database::file_records(&conn, id)?
+            .into_iter()
+            .next()
+            .map(|(_, destination, _, _)| PathBuf::from(destination))
+            .ok_or_else(|| AppError::Other("This mod has no managed files.".into()))?;
+        destination
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| AppError::Other("The installed mod folder was not found.".into()))?
     } else {
-        match kind.as_str() {
+        match kind {
             "logs" => ctx.logs_dir.clone(),
             "data" => ctx.data_dir.clone(),
-            "mods" => game(&ctx)?
+            "mods" => game(ctx)?
                 .path
                 .map(PathBuf::from)
                 .map(|p| p.join("SWZeroCompany/Content/Paks/~mods"))
                 .unwrap_or_else(|| ctx.mods_dir.clone()),
+            "game" => game(ctx)?
+                .path
+                .map(PathBuf::from)
+                .ok_or(AppError::GameNotFound)?,
             _ => return Err(AppError::Other("unknown managed path".into())),
         }
     };
     std::fs::create_dir_all(&path)?;
-    Ok(path.display().to_string())
+    Ok(path)
+}
+
+#[tauri::command]
+pub fn open_managed_path(kind: String, app: AppHandle, ctx: State<'_, AppContext>) -> Result<()> {
+    let path = managed_path_for(&kind, &ctx)?;
+    app.opener()
+        .open_path(path.display().to_string(), None::<String>)
+        .map_err(|error| AppError::Other(format!("The folder could not be opened: {error}")))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn launch_game(app: AppHandle, ctx: State<'_, AppContext>) -> Result<()> {
+    require_game(&ctx)?;
+    app.opener()
+        .open_url(steam::launch_url(), None::<String>)
+        .map_err(|error| AppError::Other(format!("Steam could not launch the game: {error}")))?;
+    log(&ctx, "info", "game_launch_requested", "source=steam_uri");
+    Ok(())
 }
 
 pub fn log(ctx: &AppContext, level: &str, event: &str, detail: &str) {
