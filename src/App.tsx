@@ -12,15 +12,18 @@ import { ModsPage } from "./pages/ModsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { AboutPage } from "./pages/AboutPage";
 import { backend, friendlyError } from "./services/backend";
-import type { AppSettings, Dashboard, DiagnosticReport, DownloadProgress, Links, ModPreview, ModSummary, NexusAccount, NexusStatus } from "./types";
+import type { AppSettings, Dashboard, DiagnosticReport, DownloadProgress, Links, LoadOrderPreview, LoadOrderState, ModPreview, ModSummary, NexusAccount, NexusStatus } from "./types";
 
 const defaultSettings: AppSettings = { gamePath: null, retocPath: null, logLevel: "normal", advancedPackageNames: false, reducedMotion: false };
 const defaultLinks: Links = { ue4ssDownload: "", nexusGame: "", project: "" };
+const defaultLoadOrder: LoadOrderState = { entries: [], activeConflicts: [], potentialConflicts: [], unapplied: false };
 
 export default function App() {
   const [page, setPage] = useState<Page>("home");
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [mods, setMods] = useState<ModSummary[]>([]);
+  const [loadOrder, setLoadOrder] = useState<LoadOrderState>(defaultLoadOrder);
+  const [orderPreview, setOrderPreview] = useState<LoadOrderPreview | null>(null);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [links, setLinks] = useState<Links>(defaultLinks);
   const [nexus, setNexus] = useState<NexusStatus | null>(null);
@@ -30,14 +33,15 @@ export default function App() {
   const [diagnostics, setDiagnostics] = useState<DiagnosticReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [busyMod, setBusyMod] = useState<string | null>(null);
+  const [orderBusy, setOrderBusy] = useState(false);
   const [advanced, setAdvanced] = useState(false);
   const [toast, setToast] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
 
   const notify = (text: string, kind: "ok" | "error" = "ok") => { setToast({ text, kind }); window.setTimeout(() => setToast(null), 4500); };
   const refresh = useCallback(async () => {
     try {
-      const [nextDashboard, nextMods, nextSettings, nextLinks, nextNexus] = await Promise.all([backend.dashboard(), backend.mods(), backend.settings(), backend.links(), backend.nexusStatus()]);
-      setDashboard(nextDashboard); setMods(nextMods); setSettings(nextSettings); setLinks(nextLinks); setNexus(nextNexus);
+      const [nextDashboard, nextMods, nextLoadOrder, nextSettings, nextLinks, nextNexus] = await Promise.all([backend.dashboard(), backend.mods(), backend.loadOrder(), backend.settings(), backend.links(), backend.nexusStatus()]);
+      setDashboard(nextDashboard); setMods(nextMods); setLoadOrder(nextLoadOrder); setSettings(nextSettings); setLinks(nextLinks); setNexus(nextNexus);
       document.documentElement.dataset.reduceMotion = String(nextSettings.reducedMotion);
     } catch (error) { notify(friendlyError(error), "error"); }
   }, []);
@@ -76,6 +80,8 @@ export default function App() {
   async function toggle(mod: ModSummary) { setBusyMod(mod.id); try { await backend.setEnabled(mod.id, !mod.enabled); await refresh(); notify(`${mod.name} ${mod.enabled ? "disabled" : "enabled"}.`); } catch (e) { notify(friendlyError(e), "error"); } finally { setBusyMod(null); } }
   async function uninstall(mod: ModSummary) { if (!window.confirm(`Uninstall ${mod.name}? Its managed library copy and unchanged deployed files will be removed.`)) return; setBusyMod(mod.id); try { await backend.uninstall(mod.id); await refresh(); notify(`${mod.name} uninstalled.`); } catch (e) { notify(`${friendlyError(e)} The changed file was kept.`, "error"); } finally { setBusyMod(null); } }
   async function verify(mod: ModSummary) { setBusyMod(mod.id); try { notify(await backend.verify(mod.id)); } catch (e) { notify(friendlyError(e), "error"); } finally { setBusyMod(null); } }
+  async function previewOrder(ids: string[]) { setOrderBusy(true); try { setOrderPreview(await backend.previewLoadOrder(ids)); } catch (e) { notify(friendlyError(e), "error"); } finally { setOrderBusy(false); } }
+  async function applyOrder(ids: string[]) { setOrderBusy(true); try { setLoadOrder(await backend.applyLoadOrder(ids)); setOrderPreview(null); await refresh(); notify("Load order applied safely."); } catch (e) { notify(friendlyError(e), "error"); } finally { setOrderBusy(false); } }
   async function installUe4ss() {
     const picked = await open({ multiple: false, title: "Select the downloaded UE4SS package", filters: [{ name: "UE4SS package", extensions: ["zip", "7z"] }] });
     if (typeof picked !== "string") return;
@@ -131,7 +137,7 @@ export default function App() {
   if (!dashboard) return <div className="splash"><img className="brand-mark" src={brandMark} alt="" width={96} height={96} /><p>Preparing your mod library…</p></div>;
   return <Shell page={page} onPage={setPage} gameReady={dashboard.game.detected}>
     {page === "home" && <HomePage data={dashboard} onInstall={() => setPage("install")} onDiagnose={() => setPage("diagnostics")} onLocate={locateGame} openMods={async () => openPath(await backend.managedPath("mods"))} onGetUe4ss={() => openExternal(links.ue4ssDownload)} onInstallUe4ss={() => void installUe4ss()} busy={loading} />}
-    {page === "mods" && <ModsPage mods={mods} onBrowseNexus={() => openExternal(links.nexusGame)} busy={busyMod} onInstall={() => setPage("install")} onToggle={toggle} onUninstall={uninstall} onVerify={verify} onOpenInstalled={mod => { const first = mod.files[0]?.destination; if (first) void revealItemInDir(first); }} onOpenSource={mod => void backend.managedPath(`mod:${mod.id}`).then(openPath)} />}
+    {page === "mods" && <ModsPage mods={mods} loadOrder={loadOrder} orderPreview={orderPreview} orderBusy={orderBusy} onPreviewOrder={ids => void previewOrder(ids)} onApplyOrder={ids => void applyOrder(ids)} onCancelOrder={() => setOrderPreview(null)} onBrowseNexus={() => openExternal(links.nexusGame)} busy={busyMod} onInstall={() => setPage("install")} onToggle={toggle} onUninstall={uninstall} onVerify={verify} onOpenInstalled={mod => { const first = mod.files[0]?.destination; if (first) void revealItemInDir(first); }} onOpenSource={mod => void backend.managedPath(`mod:${mod.id}`).then(openPath)} />}
     {page === "install" && <InstallPage preview={preview} loading={loading} download={download} advanced={advanced} onAdvanced={() => setAdvanced(!advanced)} onChooseFile={() => void choose({ filters: [{ name: "Supported mods", extensions: ["zip", "7z", "pak", "utoc", "ucas"] }] })} onChooseFolder={() => void choose({ directory: true })} onInstall={() => void install()} onCancel={() => setPreview(null)} />}
     {page === "diagnostics" && <DiagnosticsPage report={diagnostics} loading={loading} onRun={() => void runDiagnostics()} onCopy={() => void navigator.clipboard.writeText(diagnostics?.text ?? "").then(() => notify("Diagnostic report copied."))} />}
     {page === "settings" && <SettingsPage settings={settings} retoc={dashboard.retoc} onChange={setSettings} onSave={() => void saveSettings()} onPickGame={() => void locateGame()} onPickRetoc={async () => { const picked = await open({ multiple: false, title: "Select retoc executable" }); if (typeof picked === "string") setSettings({ ...settings, retocPath: picked }); }} onOpenLogs={() => void backend.managedPath("logs").then(openPath)} onOpenData={() => void backend.managedPath("data").then(openPath)} links={links} onOpenLink={openExternal} nexus={nexus} nexusAccount={nexusAccount} onSaveNexusKey={saveNexusKey} onClearNexusKey={clearNexusKey} onToggleNxmHandler={toggleNxmHandler} />}

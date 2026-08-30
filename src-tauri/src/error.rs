@@ -16,6 +16,8 @@ pub enum AppError {
     UnsafeArchive(String),
     #[error("The mod is incomplete. Missing: {0}")]
     MissingIoStoreComponent(String),
+    #[error("This archive contains overlapping IoStore containers that appear to be alternative variants: {0}. Extract it and install only one variant.")]
+    AlternativeIoStoreVariants(String),
     #[error("IoStore validation failed: {0}")]
     RetocVerificationFailed(String),
     #[error("retoc 0.1.5 is required to validate IoStore mods. Configure it in Settings.")]
@@ -30,6 +32,8 @@ pub enum AppError {
     ChecksumMismatch(PathBuf),
     #[error("The installation preview expired. Inspect the mod again.")]
     PreviewExpired,
+    #[error("The proposed load order is invalid: {0}")]
+    InvalidLoadOrder(String),
     #[error("Archive support requires the 7z command-line tool on this system.")]
     SevenZipNotFound,
     #[error("That is not a usable Nexus Mods link: {0}")]

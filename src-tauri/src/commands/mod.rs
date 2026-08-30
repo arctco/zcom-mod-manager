@@ -1,8 +1,10 @@
 use crate::{
     database, deployment, diagnostics,
     error::{AppError, Result},
+    load_order,
     models::{
-        AppSettings, Dashboard, DiagnosticReport, GameInfo, ModPreview, ModSummary, StagedMod,
+        AppSettings, Dashboard, DiagnosticReport, GameInfo, LoadOrderPreview, LoadOrderState,
+        ModPreview, ModSummary, StagedMod,
     },
     mods, retoc, steam, ue4ss, AppContext,
 };
@@ -73,6 +75,39 @@ pub fn list_mods(ctx: State<'_, AppContext>) -> Result<Vec<ModSummary>> {
 }
 
 #[tauri::command]
+pub fn get_load_order_state(ctx: State<'_, AppContext>) -> Result<LoadOrderState> {
+    load_order::state(&connection(&ctx)?)
+}
+
+#[tauri::command]
+pub fn preview_load_order(
+    ordered_mod_ids: Vec<String>,
+    ctx: State<'_, AppContext>,
+) -> Result<LoadOrderPreview> {
+    load_order::preview(&connection(&ctx)?, &ordered_mod_ids)
+}
+
+#[tauri::command]
+pub fn apply_load_order(
+    ordered_mod_ids: Vec<String>,
+    ctx: State<'_, AppContext>,
+) -> Result<LoadOrderState> {
+    let mut conn = connection(&ctx)?;
+    let state = load_order::apply(
+        &mut conn,
+        &ordered_mod_ids,
+        &ctx.data_dir.join("load-order-operation.json"),
+    )?;
+    log(
+        &ctx,
+        "info",
+        "load_order_applied",
+        &format!("ordered_mods={}", ordered_mod_ids.len()),
+    );
+    Ok(state)
+}
+
+#[tauri::command]
 pub fn inspect_mod(path: String, ctx: State<'_, AppContext>) -> Result<ModPreview> {
     let conn = connection(&ctx)?;
     let settings = database::settings(&conn)?;
@@ -82,7 +117,7 @@ pub fn inspect_mod(path: String, ctx: State<'_, AppContext>) -> Result<ModPrevie
         game.compat_data_path.as_deref().map(Path::new),
     );
     let tool = retoc::find(settings.retoc_path.as_deref());
-    let (staged, preview) = mods::scan(
+    let (staged, mut preview) = mods::scan(
         Path::new(&path),
         &ctx.cache_dir,
         &tool,
@@ -90,6 +125,10 @@ pub fn inspect_mod(path: String, ctx: State<'_, AppContext>) -> Result<ModPrevie
         ue.healthy,
         settings.advanced_package_names,
     )?;
+    preview.conflicts = database::conflicts_for_packages(&conn, &staged.packages)?;
+    if preview.load_order_supported {
+        preview.recommended_priority = Some(database::next_load_priority(&conn)?);
+    }
     log(
         &ctx,
         "info",
@@ -123,6 +162,23 @@ pub fn install_mod(staging_id: String, ctx: State<'_, AppContext>) -> Result<Mod
     );
     let _ = std::fs::remove_dir_all(&staged.staging_root);
     let summary = result?;
+    if matches!(summary.mod_type.as_str(), "pak" | "iostore") {
+        let ordered = load_order::state(&conn)?
+            .entries
+            .into_iter()
+            .filter(|entry| entry.supported)
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>();
+        if let Err(error) = load_order::apply(
+            &mut conn,
+            &ordered,
+            &ctx.data_dir.join("load-order-operation.json"),
+        ) {
+            let _ =
+                deployment::uninstall(&conn, &ctx.mods_dir, &summary.id, true, Some(&game_path));
+            return Err(error);
+        }
+    }
     log(
         &ctx,
         "info",

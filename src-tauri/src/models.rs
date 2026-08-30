@@ -91,7 +91,78 @@ pub struct ModSummary {
     pub installed_build: Option<String>,
     pub package_count: usize,
     pub conflict_count: usize,
+    pub potential_conflict_count: usize,
+    pub load_priority: Option<i64>,
     pub files: Vec<ModFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewConflict {
+    pub mod_id: String,
+    pub name: String,
+    pub package_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadOrderEntry {
+    pub id: String,
+    pub name: String,
+    pub mod_type: String,
+    pub enabled: bool,
+    pub priority: Option<i64>,
+    pub supported: bool,
+    pub support_reason: Option<String>,
+    pub applied: bool,
+    pub active_conflict_count: usize,
+    pub potential_conflict_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictGroup {
+    pub id: String,
+    pub member_ids: Vec<String>,
+    pub package_count: usize,
+    pub active: bool,
+    pub potential: bool,
+    pub winner_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadOrderState {
+    pub entries: Vec<LoadOrderEntry>,
+    pub active_conflicts: Vec<ConflictGroup>,
+    pub potential_conflicts: Vec<ConflictGroup>,
+    pub unapplied: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadOrderMove {
+    pub mod_id: String,
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WinnerChange {
+    pub conflict_id: String,
+    pub from_mod_id: Option<String>,
+    pub to_mod_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadOrderPreview {
+    pub ordered_mod_ids: Vec<String>,
+    pub moves: Vec<LoadOrderMove>,
+    pub active_conflicts: Vec<ConflictGroup>,
+    pub potential_conflicts: Vec<ConflictGroup>,
+    pub winner_changes: Vec<WinnerChange>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,6 +231,10 @@ pub struct ModPreview {
     pub compatibility: String,
     pub compatibility_message: String,
     pub tested_builds: Vec<String>,
+    pub conflicts: Vec<PreviewConflict>,
+    pub recommended_priority: Option<i64>,
+    pub load_order_supported: bool,
+    pub load_order_support_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

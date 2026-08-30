@@ -1,12 +1,12 @@
 use crate::{
     error::Result,
-    models::{AppSettings, ModFile, ModSummary},
+    models::{AppSettings, ModFile, ModSummary, PreviewConflict},
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 pub fn open(path: &Path) -> Result<Connection> {
-    let connection = Connection::open(path)?;
+    let mut connection = Connection::open(path)?;
     connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -15,7 +15,52 @@ pub fn open(path: &Path) -> Result<Connection> {
       CREATE TABLE IF NOT EXISTS mod_packages(mod_id TEXT NOT NULL REFERENCES mods(id) ON DELETE CASCADE, package_id TEXT NOT NULL, PRIMARY KEY(mod_id, package_id));
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(1, datetime('now'));"
     )?;
+    migrate_v2(&mut connection)?;
     Ok(connection)
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut statement = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(names.iter().any(|name| name == column))
+}
+
+fn migrate_v2(conn: &mut Connection) -> Result<()> {
+    let applied: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=2)",
+        [],
+        |row| row.get(0),
+    )?;
+    if applied {
+        return Ok(());
+    }
+    let transaction = conn.transaction()?;
+    if !column_exists(&transaction, "mods", "load_priority")? {
+        transaction.execute("ALTER TABLE mods ADD COLUMN load_priority INTEGER", [])?;
+    }
+    let ids = {
+        let mut statement = transaction.prepare(
+            "SELECT id FROM mods WHERE mod_type IN ('pak','iostore') ORDER BY installed_at ASC,id ASC",
+        )?;
+        let result = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        result
+    };
+    for (index, id) in ids.iter().enumerate() {
+        transaction.execute(
+            "UPDATE mods SET load_priority=?2 WHERE id=?1",
+            params![id, (index + 1) as i64],
+        )?;
+    }
+    transaction.execute(
+        "INSERT INTO schema_migrations(version,applied_at) VALUES(2,datetime('now'))",
+        [],
+    )?;
+    transaction.commit()?;
+    Ok(())
 }
 
 pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>> {
@@ -73,7 +118,7 @@ pub fn counts(conn: &Connection) -> Result<(usize, usize)> {
 }
 
 pub fn list_mods(conn: &Connection) -> Result<Vec<ModSummary>> {
-    let mut stmt = conn.prepare("SELECT id,name,version,mod_type,enabled,installed_at,installed_build FROM mods ORDER BY installed_at DESC")?;
+    let mut stmt = conn.prepare("SELECT id,name,version,mod_type,enabled,installed_at,installed_build,load_priority FROM mods ORDER BY installed_at DESC")?;
     let rows = stmt.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,
@@ -83,11 +128,13 @@ pub fn list_mods(conn: &Connection) -> Result<Vec<ModSummary>> {
             r.get::<_, bool>(4)?,
             r.get::<_, String>(5)?,
             r.get::<_, Option<String>>(6)?,
+            r.get::<_, Option<i64>>(7)?,
         ))
     })?;
     let mut result = Vec::new();
     for row in rows {
-        let (id, name, version, mod_type, enabled, installed_at, installed_build) = row?;
+        let (id, name, version, mod_type, enabled, installed_at, installed_build, load_priority) =
+            row?;
         let mut fs = conn.prepare(
             "SELECT destination,size,sha256 FROM mod_files WHERE mod_id=?1 ORDER BY destination",
         )?;
@@ -111,7 +158,12 @@ pub fn list_mods(conn: &Connection) -> Result<Vec<ModSummary>> {
             [&id],
             |r| r.get(0),
         )?;
-        let conflict_count: i64=conn.query_row("SELECT count(DISTINCT other.mod_id) FROM mod_packages mine JOIN mod_packages other ON mine.package_id=other.package_id AND mine.mod_id<>other.mod_id WHERE mine.mod_id=?1",[&id],|r|r.get(0))?;
+        let potential_conflict_count: i64=conn.query_row("SELECT count(DISTINCT other.mod_id) FROM mod_packages mine JOIN mod_packages other ON mine.package_id=other.package_id AND mine.mod_id<>other.mod_id WHERE mine.mod_id=?1",[&id],|r|r.get(0))?;
+        let conflict_count: i64 = if enabled {
+            conn.query_row("SELECT count(DISTINCT other.mod_id) FROM mod_packages mine JOIN mod_packages other ON mine.package_id=other.package_id AND mine.mod_id<>other.mod_id JOIN mods other_mod ON other_mod.id=other.mod_id WHERE mine.mod_id=?1 AND other_mod.enabled=1",[&id],|r|r.get(0))?
+        } else {
+            0
+        };
         result.push(ModSummary {
             id,
             name,
@@ -122,6 +174,8 @@ pub fn list_mods(conn: &Connection) -> Result<Vec<ModSummary>> {
             installed_build,
             package_count: package_count as usize,
             conflict_count: conflict_count as usize,
+            potential_conflict_count: potential_conflict_count as usize,
+            load_priority,
             files,
         });
     }
@@ -136,7 +190,7 @@ pub fn insert_mod(
     file_rows: &[(String, String, u64, String)],
     packages: &[String],
 ) -> Result<()> {
-    tx.execute("INSERT INTO mods(id,name,version,mod_type,deployment_key,source_archive,installed_at,enabled,installed_build) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![summary.id,summary.name,summary.version,summary.mod_type,deployment_key,source,summary.installed_at,summary.enabled,summary.installed_build])?;
+    tx.execute("INSERT INTO mods(id,name,version,mod_type,deployment_key,source_archive,installed_at,enabled,installed_build,load_priority) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![summary.id,summary.name,summary.version,summary.mod_type,deployment_key,source,summary.installed_at,summary.enabled,summary.installed_build,summary.load_priority])?;
     for (library, destination, size, hash) in file_rows {
         tx.execute("INSERT INTO mod_files(mod_id,library_relative,destination,size,sha256) VALUES(?1,?2,?3,?4,?5)",params![summary.id,library,destination,*size as i64,hash])?;
     }
@@ -171,6 +225,84 @@ pub fn file_records(conn: &Connection, id: &str) -> Result<Vec<(String, String, 
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(rows)
 }
+pub fn next_load_priority(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row(
+        "SELECT coalesce(max(load_priority),0)+1 FROM mods WHERE mod_type IN ('pak','iostore')",
+        [],
+        |row| row.get(0),
+    )?)
+}
+pub fn packaged_source_name_exists(conn: &Connection, library_relative: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM mod_files f JOIN mods m ON m.id=f.mod_id WHERE m.mod_type IN ('pak','iostore') AND lower(f.library_relative)=lower(?1))",
+        [library_relative],
+        |row| row.get(0),
+    )?)
+}
+pub fn set_load_priority(tx: &Transaction<'_>, id: &str, priority: i64) -> Result<()> {
+    tx.execute(
+        "UPDATE mods SET load_priority=?2 WHERE id=?1",
+        params![id, priority],
+    )?;
+    Ok(())
+}
+pub fn update_file_destination(
+    tx: &Transaction<'_>,
+    mod_id: &str,
+    library_relative: &str,
+    destination: &str,
+) -> Result<()> {
+    tx.execute(
+        "UPDATE mod_files SET destination=?3 WHERE mod_id=?1 AND library_relative=?2",
+        params![mod_id, library_relative, destination],
+    )?;
+    Ok(())
+}
+pub fn recorded_destination(
+    conn: &Connection,
+    mod_id: &str,
+    library_relative: &str,
+) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT destination FROM mod_files WHERE mod_id=?1 AND library_relative=?2",
+            params![mod_id, library_relative],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+pub fn conflicts_for_packages(
+    conn: &Connection,
+    packages: &[String],
+) -> Result<Vec<PreviewConflict>> {
+    let mut counts: BTreeMap<(String, String), usize> = BTreeMap::new();
+    let mut statement = conn.prepare(
+        "SELECT m.id,m.name FROM mod_packages p JOIN mods m ON m.id=p.mod_id WHERE p.package_id=?1",
+    )?;
+    for package in packages {
+        for row in statement.query_map([package], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })? {
+            *counts.entry(row?).or_default() += 1;
+        }
+    }
+    Ok(counts
+        .into_iter()
+        .map(|((mod_id, name), package_count)| PreviewConflict {
+            mod_id,
+            name,
+            package_count,
+        })
+        .collect())
+}
+pub fn package_members(conn: &Connection) -> Result<Vec<(String, String)>> {
+    let mut statement =
+        conn.prepare("SELECT package_id,mod_id FROM mod_packages ORDER BY package_id,mod_id")?;
+    let result = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(result)
+}
 pub fn mod_kind(conn: &Connection, id: &str) -> Result<(String, String, bool)> {
     Ok(conn.query_row(
         "SELECT CASE WHEN deployment_key='' THEN name ELSE deployment_key END,mod_type,enabled FROM mods WHERE id=?1",
@@ -179,8 +311,8 @@ pub fn mod_kind(conn: &Connection, id: &str) -> Result<(String, String, bool)> {
     )?)
 }
 pub fn conflict_count(conn: &Connection) -> Result<usize> {
-    let package:i64=conn.query_row("SELECT count(*) FROM (SELECT package_id FROM mod_packages GROUP BY package_id HAVING count(*)>1)",[],|r|r.get(0))?;
-    let files:i64=conn.query_row("SELECT count(*) FROM (SELECT destination FROM mod_files GROUP BY destination HAVING count(*)>1)",[],|r|r.get(0))?;
+    let package:i64=conn.query_row("SELECT count(*) FROM (SELECT p.package_id FROM mod_packages p JOIN mods m ON m.id=p.mod_id WHERE m.enabled=1 GROUP BY p.package_id HAVING count(*)>1)",[],|r|r.get(0))?;
+    let files:i64=conn.query_row("SELECT count(*) FROM (SELECT f.destination FROM mod_files f JOIN mods m ON m.id=f.mod_id WHERE m.enabled=1 GROUP BY f.destination HAVING count(*)>1)",[],|r|r.get(0))?;
     Ok((package + files) as usize)
 }
 
@@ -201,6 +333,8 @@ mod tests {
             installed_build: None,
             package_count: 0,
             conflict_count: 0,
+            potential_conflict_count: 0,
+            load_priority: None,
             files: vec![],
         }
     }
@@ -249,5 +383,40 @@ mod tests {
         add(&mut conn, "a", "/mods/a.pak", &["one".into()]);
         add(&mut conn, "b", "/mods/b.pak", &["two".into()]);
         assert_eq!(conflict_count(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn migrates_v1_and_assigns_newer_packaged_mods_higher_priority() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("db");
+        let legacy = Connection::open(&path).unwrap();
+        legacy.execute_batch("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+          CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+          CREATE TABLE mods(id TEXT PRIMARY KEY, name TEXT NOT NULL, version TEXT, mod_type TEXT NOT NULL, deployment_key TEXT NOT NULL DEFAULT '', source_archive TEXT, installed_at TEXT NOT NULL, enabled INTEGER NOT NULL, installed_build TEXT);
+          CREATE TABLE mod_files(id INTEGER PRIMARY KEY, mod_id TEXT NOT NULL REFERENCES mods(id) ON DELETE CASCADE, library_relative TEXT NOT NULL, destination TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL);
+          CREATE TABLE mod_packages(mod_id TEXT NOT NULL REFERENCES mods(id) ON DELETE CASCADE, package_id TEXT NOT NULL, PRIMARY KEY(mod_id, package_id));
+          INSERT INTO schema_migrations VALUES(1,datetime('now'));
+          INSERT INTO mods VALUES('old','Old',NULL,'pak','',NULL,'2026-01-01',1,NULL);
+          INSERT INTO mods VALUES('new','New',NULL,'iostore','',NULL,'2026-02-01',1,NULL);
+          INSERT INTO mods VALUES('lua','Lua',NULL,'ue4ss','',NULL,'2026-03-01',1,NULL);").unwrap();
+        drop(legacy);
+        let migrated = open(&path).unwrap();
+        let priorities = migrated
+            .prepare("SELECT id,load_priority FROM mods ORDER BY id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+            })
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            priorities,
+            vec![
+                ("lua".into(), None),
+                ("new".into(), Some(2)),
+                ("old".into(), Some(1))
+            ]
+        );
     }
 }

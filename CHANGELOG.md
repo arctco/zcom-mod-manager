@@ -2,6 +2,24 @@
 
 All notable changes are documented here.
 
+## 0.2.0
+
+- Added a conflict-aware load-order editor for runtime-verified IoStore
+  triplets. PAK-only mods and pure IoStore pairs remain visible but gated.
+- Added deterministic numeric `_P` deployment ranks, with the highest row
+  winning known package overlaps.
+- Added active and potential conflict states plus winner previews that keep raw
+  package paths private.
+- Added review-before-apply, SHA-256 preflight checks, rollback-safe renames,
+  and startup recovery for interrupted load-order operations.
+- Newly installed runtime-supported packaged mods default to the highest
+  priority and normalize the existing managed order in the same confirmed
+  installation flow.
+- Archives containing overlapping IoStore container variants are now rejected
+  with guidance to install only one variant.
+- Added a real SQLite v2 migration while preserving existing mod ownership and
+  enabled states.
+
 ## 0.1.5
 
 - Restored the original 0.1.0 blue, steel, and gold interface palette while

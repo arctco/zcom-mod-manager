@@ -48,6 +48,23 @@ fn rel(root: &Path, path: &Path) -> Result<PathBuf> {
         .to_path_buf())
 }
 
+fn register_package_owners(
+    owners: &mut BTreeMap<String, String>,
+    stem: &str,
+    packages: &[String],
+) -> Result<()> {
+    for package in packages {
+        if let Some(previous) = owners.insert(package.clone(), stem.to_string()) {
+            if previous != stem {
+                return Err(AppError::AlternativeIoStoreVariants(format!(
+                    "{previous} and {stem}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn scan(
     source: &Path,
     cache: &Path,
@@ -111,6 +128,7 @@ pub fn scan(
     let kind: String;
     let mut deployment_key = String::new();
     let mut packages = Vec::new();
+    let mut package_owners: BTreeMap<String, String> = BTreeMap::new();
     let mut package_paths = Vec::new();
     let mut verification = "not-required".to_string();
     let mut details = None;
@@ -146,6 +164,12 @@ pub fn scan(
             }
             match retoc::inspect(tool, group.get("utoc").unwrap()) {
                 Ok(info) => {
+                    if let Err(error) =
+                        register_package_owners(&mut package_owners, stem, &info.package_ids)
+                    {
+                        let _ = fs::remove_dir_all(&root);
+                        return Err(error);
+                    }
                     packages.extend(info.package_ids);
                     package_paths.extend(info.package_paths);
                     details = Some(match details {
@@ -265,7 +289,7 @@ pub fn scan(
         version: staged.version.clone(),
         author: staged.author.clone(),
         description: staged.description.clone(),
-        mod_type: kind,
+        mod_type: kind.clone(),
         files: payload
             .iter()
             .map(|p| p.library_relative.display().to_string())
@@ -283,6 +307,33 @@ pub fn scan(
         compatibility,
         compatibility_message,
         tested_builds: tested,
+        conflicts: Vec::new(),
+        recommended_priority: None,
+        load_order_supported: kind == "iostore"
+            && payload.iter().any(|file| {
+                file.library_relative
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("pak"))
+            }),
+        load_order_support_reason: match kind.as_str() {
+            "pak" => Some(
+                "PAK-only ordering did not pass the Zero Company runtime capability test.".into(),
+            ),
+            "iostore"
+                if !payload.iter().any(|file| {
+                    file.library_relative
+                        .extension()
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("pak"))
+                }) =>
+            {
+                Some(
+                    "IoStore pairs without a companion PAK are not runtime-verified for ordering."
+                        .into(),
+                )
+            }
+            "ue4ss" => Some("UE4SS mods use their own runtime ordering.".into()),
+            _ => None,
+        },
     };
     Ok((staged, preview))
 }
@@ -320,6 +371,17 @@ mod tests {
         let (_, p) = scan(s.path(), c.path(), &tool(), None, false, false).unwrap();
         assert_eq!(p.mod_type, "pak");
         assert!(p.valid);
+        assert!(!p.load_order_supported);
+        assert!(p.load_order_support_reason.is_some());
+    }
+    #[test]
+    fn rejects_overlapping_iostore_variants() {
+        let mut owners = BTreeMap::new();
+        register_package_owners(&mut owners, "FullPrice", &["package-a".into()]).unwrap();
+        assert!(matches!(
+            register_package_owners(&mut owners, "HalfPrice", &["package-a".into()]),
+            Err(AppError::AlternativeIoStoreVariants(_))
+        ));
     }
     #[test]
     fn detects_complete_iostore_triplet_and_requires_verifier() {
@@ -333,6 +395,23 @@ mod tests {
         assert_eq!(preview.files.len(), 3);
         assert_eq!(preview.verification, "unavailable");
         assert!(!preview.valid);
+        assert!(preview.load_order_supported);
+    }
+    #[test]
+    fn keeps_iostore_pairs_visible_but_not_orderable() {
+        let s = tempdir().unwrap();
+        let c = tempdir().unwrap();
+        for ext in ["utoc", "ucas"] {
+            fs::write(s.path().join(format!("Cool_P.{ext}")), b"synthetic").unwrap();
+        }
+        let (_, preview) = scan(s.path(), c.path(), &tool(), None, false, false).unwrap();
+        assert_eq!(preview.mod_type, "iostore");
+        assert!(!preview.load_order_supported);
+        assert!(preview
+            .load_order_support_reason
+            .as_deref()
+            .unwrap()
+            .contains("without a companion PAK"));
     }
     #[test]
     fn rejects_incomplete_triplet() {

@@ -1,9 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppSettings, Dashboard, DiagnosticReport, Links, ModPreview, ModSummary, NexusAccount, NexusStatus, Ue4ssInstallReport, UpdateInfo } from "../types";
+import type { AppSettings, Dashboard, DiagnosticReport, Links, LoadOrderPreview, LoadOrderState, ModPreview, ModSummary, NexusAccount, NexusStatus, Ue4ssInstallReport, UpdateInfo } from "../types";
 
 export const backend = {
   dashboard: () => invoke<Dashboard>("get_dashboard"),
   mods: () => invoke<ModSummary[]>("list_mods"),
+  loadOrder: () => invoke<LoadOrderState>("get_load_order_state"),
+  previewLoadOrder: (orderedModIds: string[]) => invoke<LoadOrderPreview>("preview_load_order", { orderedModIds }),
+  applyLoadOrder: (orderedModIds: string[]) => invoke<LoadOrderState>("apply_load_order", { orderedModIds }),
   inspect: (path: string) => invoke<ModPreview>("inspect_mod", { path }),
   install: (stagingId: string) => invoke<ModSummary>("install_mod", { stagingId }),
   setEnabled: (id: string, enabled: boolean) => invoke<void>("set_mod_enabled", { id, enabled }),

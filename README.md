@@ -25,6 +25,7 @@ records SHA-256 ownership, and treats Linux/Proton as a first-class platform.
 - Manager-owned source library plus checksum-guarded deployment records
 - Enable, disable, verify, and safe uninstall operations
 - Filename and hashed IoStore package conflict detection
+- Conflict-aware packaged-mod load order with preview and rollback
 - Optional spoiler-sensitive package paths, disabled by default
 - UE4SS layout checks and formatting-preserving `mods.txt` updates
 - Guided UE4SS runtime installation from a package you downloaded yourself
@@ -144,6 +145,27 @@ Two levels are tracked:
 Normal UI and logs show only overlap counts. Raw asset paths are exposed only
 after the user enables advanced package names in Settings and opens Advanced
 Details; those names can contain spoilers.
+
+## Load Order
+
+**Mods → Load order** lists supported packaged mods from highest to lowest
+priority. Move a mod toward the top to make it win known package overlaps, then
+review the exact deployment filenames before applying. Newly installed
+runtime-supported packaged mods start at the highest priority.
+
+The manager keeps original filenames in its source library and applies a
+numeric patch rank only to deployed companions. For example,
+`Example_P.pak/.utoc/.ucas` at priority 3 becomes
+`Example_0003_P.pak/.utoc/.ucas`. Every current file is checksum-verified
+before a rename. A failed filesystem or database step rolls back, and an
+interrupted operation is recovered at the next startup.
+
+IoStore triplets are orderable because both priority directions were
+demonstrated against Zero Company's runtime and re-verified with retoc after
+each rename. Pure UTOC/UCAS pairs and PAK-only mods remain visible but
+non-orderable. The pair layout is untested; the PAK-only capability fixture did
+not pass the runtime gate. PAK-only package contents also remain opaque, so
+their overlap winners cannot be identified automatically.
 
 ## Container Verification
 
@@ -383,9 +405,9 @@ Confirm checksums after the run finishes. See
 
 ## Roadmap
 
-- **0.2:** profiles, load-order tools, dependency metadata, mod update checks
-- **0.3:** *(in progress)* Nexus handoff shipped; update checking against the
-  API still to come
+- **0.2:** conflict-aware packaged-mod load order shipped; profiles, dependency
+  metadata, and mod update checks remain
+- **0.3:** Nexus handoff shipped; update checking against the API still to come
 - **Future / separate project:** ZCOM Mod Studio for asset inspection and authoring
 
 ## Contributing

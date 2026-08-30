@@ -87,7 +87,64 @@ export interface ModSummary {
   installedBuild: string | null;
   packageCount: number;
   conflictCount: number;
+  potentialConflictCount: number;
+  loadPriority: number | null;
   files: ModFile[];
+}
+
+export interface PreviewConflict {
+  modId: string;
+  name: string;
+  packageCount: number;
+}
+
+export interface LoadOrderEntry {
+  id: string;
+  name: string;
+  modType: "iostore" | "pak";
+  enabled: boolean;
+  priority: number | null;
+  supported: boolean;
+  supportReason: string | null;
+  applied: boolean;
+  activeConflictCount: number;
+  potentialConflictCount: number;
+}
+
+export interface ConflictGroup {
+  id: string;
+  memberIds: string[];
+  packageCount: number;
+  active: boolean;
+  potential: boolean;
+  winnerId: string | null;
+}
+
+export interface LoadOrderState {
+  entries: LoadOrderEntry[];
+  activeConflicts: ConflictGroup[];
+  potentialConflicts: ConflictGroup[];
+  unapplied: boolean;
+}
+
+export interface LoadOrderMove {
+  modId: string;
+  from: string;
+  to: string;
+}
+
+export interface WinnerChange {
+  conflictId: string;
+  fromModId: string | null;
+  toModId: string | null;
+}
+
+export interface LoadOrderPreview {
+  orderedModIds: string[];
+  moves: LoadOrderMove[];
+  activeConflicts: ConflictGroup[];
+  potentialConflicts: ConflictGroup[];
+  winnerChanges: WinnerChange[];
 }
 
 export interface ModFile {
@@ -114,6 +171,10 @@ export interface ModPreview {
   compatibility: Health;
   compatibilityMessage: string;
   testedBuilds: string[];
+  conflicts: PreviewConflict[];
+  recommendedPriority: number | null;
+  loadOrderSupported: boolean;
+  loadOrderSupportReason: string | null;
 }
 
 export interface DiagnosticItem {

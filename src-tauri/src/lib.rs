@@ -5,6 +5,7 @@ mod database;
 mod deployment;
 mod diagnostics;
 mod error;
+mod load_order;
 mod models;
 mod mods;
 mod nexus;
@@ -70,6 +71,8 @@ pub fn run() {
             let db_path = data_dir.join("zcom-mod-manager.sqlite3");
             let conn = database::open(&db_path)
                 .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
+            load_order::recover(&conn, &data_dir.join("load-order-operation.json"))
+                .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
             let settings = database::settings(&conn)
                 .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
             let detected = if let Some(path) = settings.game_path.filter(|p| !p.is_empty()) {
@@ -107,6 +110,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_dashboard,
             commands::list_mods,
+            commands::get_load_order_state,
+            commands::preview_load_order,
+            commands::apply_load_order,
             commands::inspect_mod,
             commands::install_mod,
             commands::set_mod_enabled,

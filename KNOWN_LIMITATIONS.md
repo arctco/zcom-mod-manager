@@ -1,11 +1,10 @@
-# Known Limitations — 0.1.2
+# Known Limitations — 0.2.0
 
 - 7z installation uses the open-source 7-Zip command-line program available on
   the host. ZIP support is built in. A missing `7z` produces setup guidance.
 - UE4SS can be installed from a package the user downloaded, but it is never
-  downloaded automatically. Nexus Mods does not issue download links to
-  anonymous clients, so an automatic fetch needs `nxm://` handoff or a personal
-  Nexus API key; both are deferred to 0.3.
+  downloaded automatically. The Nexus `nxm://` handoff can download a package
+  after the user starts it on the website and configures a personal API key.
 - UE4SS installation preserves `UE4SS-settings.ini`, `mods.txt`, `mods.json`,
   and every `load_order.txt`. A package shipping newer defaults for those will
   not replace an existing copy; remove yours first to adopt them.
@@ -18,7 +17,14 @@
   game container formats may require an upstream update.
 - PAK-only mods cannot provide package-level overlap metadata; only destination
   filename collision is available for them.
-- Package load order and full profiles are intentionally deferred to 0.2.
+- Load-order management is enabled for IoStore triplets with a companion PAK,
+  which passed the two-direction Zero Company runtime test. Pure UTOC/UCAS
+  pairs remain visible but non-orderable because they are not independently
+  verified.
+- PAK-only mods remain visible but non-orderable: the local capability fixture
+  did not pass the runtime gate. Their contents are also opaque, so the manager
+  cannot identify which assets a PAK-only mod wins or loses.
+- UE4SS mod order and full profiles remain separate future work.
 - Installed mods are not checked against Nexus for newer versions yet.
 - Downloads must be started from the Nexus Mods website. A non-premium account
   cannot obtain a download link from the API without the website-minted key, so

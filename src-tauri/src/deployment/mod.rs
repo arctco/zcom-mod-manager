@@ -1,6 +1,7 @@
 use crate::{
     database,
     error::{AppError, Result},
+    load_order,
     models::{ModFile, ModSummary, StagedMod},
     ue4ss,
 };
@@ -60,6 +61,26 @@ pub fn install(
     build: Option<String>,
 ) -> Result<ModSummary> {
     let id = Uuid::new_v4().to_string();
+    let load_priority = matches!(staged.mod_type.as_str(), "pak" | "iostore")
+        .then(|| database::next_load_priority(conn))
+        .transpose()?;
+    let orderable = staged.mod_type == "iostore"
+        && staged.files.iter().any(|file| {
+            file.destination_relative
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("pak"))
+        });
+    if matches!(staged.mod_type.as_str(), "pak" | "iostore") {
+        let base = destination_base(game, &staged.mod_type);
+        for file in &staged.files {
+            let logical_name = file.library_relative.display().to_string();
+            if database::packaged_source_name_exists(conn, &logical_name)? {
+                return Err(AppError::DeploymentConflict(
+                    base.join(&file.destination_relative),
+                ));
+            }
+        }
+    }
     let mod_library = library.join(&id);
     let payload_root = mod_library.join("payload");
     fs::create_dir_all(&payload_root)?;
@@ -79,7 +100,20 @@ pub fn install(
     let deploy_result = (|| -> Result<()> {
         for file in &staged.files {
             let source = payload_root.join(&file.library_relative);
-            let destination = base.join(&file.destination_relative);
+            let destination_relative = if orderable {
+                let filename = file
+                    .destination_relative
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy();
+                PathBuf::from(load_order::managed_filename(
+                    &filename,
+                    load_priority.expect("packaged mods have a priority"),
+                )?)
+            } else {
+                file.destination_relative.clone()
+            };
+            let destination = base.join(destination_relative);
             copy_atomic(&source, &destination)?;
             let size = fs::metadata(&destination)?.len();
             let hash = sha256(&destination)?;
@@ -110,6 +144,8 @@ pub fn install(
         installed_build: build,
         package_count: staged.packages.len(),
         conflict_count: 0,
+        potential_conflict_count: 0,
+        load_priority,
         files: rows
             .iter()
             .map(|(_, d, s, h)| ModFile {
@@ -341,6 +377,21 @@ mod tests {
         .unwrap();
         fs::create_dir_all(&l).unwrap();
         let mut c = database::open(&d.path().join("db")).unwrap();
+        assert!(matches!(
+            install(&mut c, &l, &g, &staged(d.path()), None),
+            Err(AppError::DeploymentConflict(_))
+        ));
+    }
+
+    #[test]
+    fn logical_source_filename_collision_is_refused_across_priorities() {
+        let d = tempdir().unwrap();
+        let g = d.path().join("game");
+        let l = d.path().join("library");
+        game(&g);
+        fs::create_dir_all(&l).unwrap();
+        let mut c = database::open(&d.path().join("db")).unwrap();
+        install(&mut c, &l, &g, &staged(d.path()), None).unwrap();
         assert!(matches!(
             install(&mut c, &l, &g, &staged(d.path()), None),
             Err(AppError::DeploymentConflict(_))
