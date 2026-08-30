@@ -1,6 +1,6 @@
 [package]
 name = "zcom-mod-manager"
-version = "0.1.3"
+version = "0.1.4"
 description = "A dedicated mod manager for Star Wars: Zero Company"
 authors = ["ZCOM Mod Manager contributors"]
 edition = "2021"

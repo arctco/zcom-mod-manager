@@ -2,13 +2,19 @@
 
 All notable changes are documented here.
 
-## 0.1.3
+## 0.1.4
 
 - Added a portable Windows zip to the release artifacts. Extract it anywhere and
   run `ZCOM Mod Manager.exe`. The bundled `retoc.exe` ships beside it and is
   detected automatically, so IoStore verification works without configuration.
   The portable build expects the Microsoft Edge WebView2 runtime to already be
   installed; the NSIS installer still fetches it when missing.
+- Fixed the release step that packages that zip. It looked for the executable
+  under the product name, but `tauri build` leaves the cargo package name in
+  `target/release`, so 0.1.3 published without the zip its notes announced.
+
+## 0.1.3
+
 - Removed the MSI bundle. NSIS is now the only Windows installer.
 
 ## 0.1.2
