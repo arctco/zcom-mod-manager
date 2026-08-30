@@ -4,7 +4,7 @@ use crate::{
     load_order,
     models::{
         AppSettings, Dashboard, DiagnosticReport, GameInfo, LoadOrderPreview, LoadOrderState,
-        ModPreview, ModSummary, StagedMod,
+        ModPreview, ModSummary, ReplacedMod, StagedMod,
     },
     mods, retoc, steam, ue4ss, AppContext,
 };
@@ -89,6 +89,26 @@ pub fn preview_load_order(
     load_order::preview(&connection(&ctx)?, &ordered_mod_ids)
 }
 
+/// Writes the UE4SS start order. Unlike the packaged order, this renames
+/// nothing: the runtime reads `mods.txt` top to bottom, so there is no preview
+/// step and nothing to roll back.
+#[tauri::command]
+pub fn apply_ue4ss_order(
+    ordered_mod_ids: Vec<String>,
+    ctx: State<'_, AppContext>,
+) -> Result<LoadOrderState> {
+    let (_, game_path) = require_game(&ctx)?;
+    let mut conn = connection(&ctx)?;
+    let state = load_order::apply_ue4ss_order(&mut conn, &game_path, &ordered_mod_ids)?;
+    log(
+        &ctx,
+        "info",
+        "ue4ss_order_applied",
+        &format!("ordered_mods={}", ordered_mod_ids.len()),
+    );
+    Ok(state)
+}
+
 #[tauri::command]
 pub fn apply_load_order(
     ordered_mod_ids: Vec<String>,
@@ -109,8 +129,14 @@ pub fn apply_load_order(
     Ok(state)
 }
 
+/// Reads an archive or folder and reports every mod it contains.
+///
+/// One download regularly holds more than one installable mod: a UE4SS archive
+/// with several script folders, or a package that ships both a `.pak` and a
+/// loader mod. Each is previewed separately so the person can name and install
+/// them individually.
 #[tauri::command]
-pub fn inspect_mod(path: String, ctx: State<'_, AppContext>) -> Result<ModPreview> {
+pub fn inspect_mod(path: String, ctx: State<'_, AppContext>) -> Result<Vec<ModPreview>> {
     let conn = connection(&ctx)?;
     let settings = database::settings(&conn)?;
     let game = game(&ctx)?;
@@ -119,7 +145,7 @@ pub fn inspect_mod(path: String, ctx: State<'_, AppContext>) -> Result<ModPrevie
         game.compat_data_path.as_deref().map(Path::new),
     );
     let tool = retoc::find(settings.retoc_path.as_deref());
-    let (staged, mut preview) = mods::scan(
+    let found = mods::scan(
         Path::new(&path),
         &ctx.cache_dir,
         &tool,
@@ -127,50 +153,276 @@ pub fn inspect_mod(path: String, ctx: State<'_, AppContext>) -> Result<ModPrevie
         ue.healthy,
         settings.advanced_package_names,
     )?;
-    preview.conflicts = database::conflicts_for_packages(&conn, &staged.packages)?;
-    if preview.load_order_supported {
-        preview.recommended_priority = Some(database::next_load_priority(&conn)?);
+    let mut result = Vec::new();
+    let mut held = previews(&ctx)?;
+    for (staged, mut preview) in found {
+        preview.conflicts = database::conflicts_for_packages(&conn, &staged.packages)?;
+        preview.replaces = replaced_by(&conn, &staged)?;
+        if preview.load_order_supported {
+            preview.recommended_priority = Some(database::next_load_priority(&conn)?);
+        }
+        held.insert(staged.staging_id.clone(), staged);
+        result.push(preview);
     }
+    drop(held);
     log(
         &ctx,
         "info",
         "mod_inspected",
-        &format!("type={} files={}", preview.mod_type, preview.files.len()),
+        &format!(
+            "mods={} types={}",
+            result.len(),
+            result
+                .iter()
+                .map(|preview| preview.mod_type.clone())
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
     );
-    previews(&ctx)?.insert(staged.staging_id.clone(), staged);
-    Ok(preview)
+    Ok(result)
 }
 
+/// Every orderable mod, highest priority first.
+fn ordered_supported(conn: &rusqlite::Connection) -> Result<Vec<String>> {
+    Ok(load_order::state(conn)?
+        .entries
+        .into_iter()
+        .filter(|entry| entry.supported)
+        .map(|entry| entry.id)
+        .collect())
+}
+
+/// Puts a replacement in the slot its predecessor held. Anything newly
+/// orderable, or orderable for the first time, falls in at the end.
+fn keep_position(
+    conn: &rusqlite::Connection,
+    previous: &[String],
+    old_id: &str,
+    new_id: &str,
+) -> Result<Vec<String>> {
+    let supported = ordered_supported(conn)?;
+    let mut ordered: Vec<String> = previous
+        .iter()
+        .map(|id| {
+            if id == old_id {
+                new_id.to_string()
+            } else {
+                id.clone()
+            }
+        })
+        .filter(|id| supported.contains(id))
+        .collect();
+    let appended: Vec<String> = supported
+        .into_iter()
+        .filter(|id| !ordered.contains(id))
+        .collect();
+    ordered.extend(appended);
+    Ok(ordered)
+}
+
+/// The installed mod a candidate would land on top of.
+///
+/// A newer build of a mod occupies exactly the same runtime folder or payload
+/// file names as the one already installed. Reporting that as a deployment
+/// conflict made updating a mod a two-step chore, so it is surfaced as the
+/// upgrade it is.
+fn replaced_by(conn: &rusqlite::Connection, staged: &StagedMod) -> Result<Option<ReplacedMod>> {
+    let found = match staged.mod_type.as_str() {
+        "ue4ss" => staged
+            .deployment_keys
+            .iter()
+            .find_map(|key| database::ue4ss_folder_owner(conn, key).transpose())
+            .transpose()?
+            .map(|id| (id, "It uses the same UE4SS mod folder.".to_string())),
+        "pak" | "iostore" => staged
+            .files
+            .iter()
+            .find_map(|file| {
+                database::packaged_source_name_owner(
+                    conn,
+                    &file.library_relative.display().to_string(),
+                    None,
+                )
+                .transpose()
+            })
+            .transpose()?
+            .map(|id| (id, "It ships the same container files.".to_string())),
+        "gamedir" => {
+            let game = match game_path(conn)? {
+                Some(path) => path,
+                None => return Ok(None),
+            };
+            staged
+                .files
+                .iter()
+                .find_map(|file| {
+                    database::destination_owner(
+                        conn,
+                        &game.join(&file.destination_relative).display().to_string(),
+                        None,
+                    )
+                    .transpose()
+                })
+                .transpose()?
+                .map(|id| (id, "It writes to the same place in the game folder.".into()))
+        }
+        _ => None,
+    };
+    found
+        .map(|(mod_id, reason)| {
+            let (name, version) = database::summary_of(conn, &mod_id)?;
+            Ok(ReplacedMod {
+                mod_id,
+                name,
+                version,
+                reason,
+            })
+        })
+        .transpose()
+}
+
+/// The game folder as the database and Steam currently resolve it, without
+/// failing when no game is connected: an inspection is still useful then.
+fn game_path(conn: &rusqlite::Connection) -> Result<Option<PathBuf>> {
+    let settings = database::settings(conn)?;
+    let info = if let Some(path) = settings.game_path.filter(|p| !p.is_empty()) {
+        steam::from_manual(Path::new(&path)).ok()
+    } else {
+        steam::discover().ok().flatten()
+    };
+    Ok(info.and_then(|info| info.path).map(PathBuf::from))
+}
+
+/// Drops the staged copy of an archive once no preview still refers to it.
+/// Several previews share one extraction, so the sandbox outlives the first
+/// installation and is cleaned up after the last.
+fn release_staging(ctx: &AppContext, root: &Path) {
+    let still_needed = previews(ctx)
+        .map(|held| held.values().any(|staged| staged.staging_root == root))
+        .unwrap_or(true);
+    if !still_needed {
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+/// Forgets every preview taken from one archive, and removes its sandbox.
 #[tauri::command]
-pub fn install_mod(staging_id: String, ctx: State<'_, AppContext>) -> Result<ModSummary> {
-    let staged = previews(&ctx)?
+pub fn discard_previews(staging_ids: Vec<String>, ctx: State<'_, AppContext>) -> Result<()> {
+    let mut roots = Vec::new();
+    {
+        let mut held = previews(&ctx)?;
+        for id in &staging_ids {
+            if let Some(staged) = held.remove(id) {
+                roots.push(staged.staging_root);
+            }
+        }
+    }
+    roots.sort();
+    roots.dedup();
+    for root in roots {
+        release_staging(&ctx, &root);
+    }
+    Ok(())
+}
+
+/// Renames an installed mod. Only the label changes: deployed file names, the
+/// UE4SS folder names, and every recorded checksum stay exactly as they are.
+#[tauri::command]
+pub fn rename_mod(id: String, name: String, ctx: State<'_, AppContext>) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(AppError::Other("A mod needs a name.".into()));
+    }
+    if name.chars().count() > 120 {
+        return Err(AppError::Other(
+            "That name is too long. Use 120 characters or fewer.".into(),
+        ));
+    }
+    database::rename_mod(&connection(&ctx)?, &id, name)?;
+    log(&ctx, "info", "mod_renamed", &format!("mod_id={id}"));
+    Ok(())
+}
+
+/// Installs a staged mod, optionally over the one it supersedes.
+///
+/// `replace` carries the id the preview reported in `replaces`. Passing it
+/// upgrades in place; leaving it out installs alongside, which fails with the
+/// usual deployment conflict when the two really do collide.
+#[tauri::command]
+pub fn install_mod(
+    staging_id: String,
+    name: Option<String>,
+    replace: Option<String>,
+    ctx: State<'_, AppContext>,
+) -> Result<ModSummary> {
+    let mut staged = previews(&ctx)?
         .remove(&staging_id)
         .ok_or(AppError::PreviewExpired)?;
+    if let Some(name) = name
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+    {
+        staged.name = name.chars().take(120).collect();
+    }
+    if staged.mod_type == "ue4ss-runtime" {
+        return Err(AppError::Other(
+            "That archive is the UE4SS runtime. Install it with the UE4SS button instead.".into(),
+        ));
+    }
     if staged.mod_type == "iostore" && staged.verification != "passed" {
         return Err(AppError::RetocVerificationFailed(
             staged
                 .verification_details
+                .clone()
                 .unwrap_or_else(|| "verification did not pass".into()),
         ));
     }
     let (game_info, game_path) = require_game(&ctx)?;
     let mut conn = connection(&ctx)?;
-    let result = deployment::install(
-        &mut conn,
-        &ctx.mods_dir,
-        &game_path,
-        &staged,
-        game_info.steam_build_id,
-    );
-    let _ = std::fs::remove_dir_all(&staged.staging_root);
+    // Position the replacement where the mod it supersedes sat, rather than at
+    // the top, so an upgrade does not silently change which mod wins.
+    let previous_order = replace
+        .as_ref()
+        .map(|_| ordered_supported(&conn))
+        .transpose()?;
+    let result = match replace.as_deref() {
+        Some(old_id) => deployment::replace(
+            &mut conn,
+            &ctx.mods_dir,
+            &game_path,
+            old_id,
+            &staged,
+            game_info.steam_build_id,
+            false,
+        ),
+        None => deployment::install(
+            &mut conn,
+            &ctx.mods_dir,
+            &game_path,
+            &staged,
+            game_info.steam_build_id,
+        ),
+    };
+    release_staging(&ctx, &staged.staging_root);
     let summary = result?;
-    if matches!(summary.mod_type.as_str(), "pak" | "iostore") {
+    if summary.mod_type == "ue4ss" {
+        // The recorded start order is the source of truth, so mods.txt is
+        // rewritten from it. For a fresh install that only confirms the entry
+        // just appended; for an upgrade it restores the slot it inherited.
         let ordered = load_order::state(&conn)?
-            .entries
+            .ue4ss_entries
             .into_iter()
-            .filter(|entry| entry.supported)
             .map(|entry| entry.id)
             .collect::<Vec<_>>();
+        if let Err(error) = load_order::apply_ue4ss_order(&mut conn, &game_path, &ordered) {
+            log(&ctx, "warn", "ue4ss_order_not_written", &error.to_string());
+        }
+    }
+    if matches!(summary.mod_type.as_str(), "pak" | "iostore") {
+        let ordered = match (previous_order, replace.as_deref()) {
+            (Some(previous), Some(old_id)) => keep_position(&conn, &previous, old_id, &summary.id)?,
+            _ => ordered_supported(&conn)?,
+        };
         if let Err(error) = load_order::apply(
             &mut conn,
             &ordered,
@@ -371,7 +623,7 @@ pub fn set_game_path(path: String, ctx: State<'_, AppContext>) -> Result<GameInf
 fn managed_path_for(kind: &str, ctx: &AppContext) -> Result<PathBuf> {
     let path = if let Some(id) = kind.strip_prefix("mod:") {
         let conn = connection(ctx)?;
-        database::mod_kind(&conn, id)?;
+        database::mod_record(&conn, id)?;
         let path = ctx.mods_dir.join(id);
         if !path.is_dir() {
             return Err(AppError::Other(
@@ -381,7 +633,7 @@ fn managed_path_for(kind: &str, ctx: &AppContext) -> Result<PathBuf> {
         path
     } else if let Some(id) = kind.strip_prefix("installed:") {
         let conn = connection(ctx)?;
-        database::mod_kind(&conn, id)?;
+        database::mod_record(&conn, id)?;
         let destination = database::file_records(&conn, id)?
             .into_iter()
             .next()

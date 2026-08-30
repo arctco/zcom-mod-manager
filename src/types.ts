@@ -13,7 +13,7 @@ export interface GameInfo {
 export interface Ue4ssInfo {
   installed: boolean;
   healthy: boolean;
-  luaMods: number;
+  modCount: number;
   logFound: boolean;
   protonOverride: boolean | null;
   message: string | null;
@@ -77,11 +77,16 @@ export interface ToolInfo {
   version: string | null;
 }
 
+/** What a payload is and where it is deployed. */
+export type ModType = "iostore" | "pak" | "ue4ss" | "gamedir";
+/** A preview may also describe the UE4SS runtime, which is not a mod. */
+export type PreviewType = ModType | "ue4ss-runtime";
+
 export interface ModSummary {
   id: string;
   name: string;
   version: string | null;
-  modType: "iostore" | "pak" | "ue4ss";
+  modType: ModType;
   enabled: boolean;
   installedAt: string;
   installedBuild: string | null;
@@ -90,6 +95,14 @@ export interface ModSummary {
   potentialConflictCount: number;
   loadPriority: number | null;
   files: ModFile[];
+}
+
+/** An installed mod a candidate would take the place of. */
+export interface ReplacedMod {
+  modId: string;
+  name: string;
+  version: string | null;
+  reason: string;
 }
 
 export interface PreviewConflict {
@@ -101,7 +114,9 @@ export interface PreviewConflict {
 export interface LoadOrderEntry {
   id: string;
   name: string;
-  modType: "iostore" | "pak";
+  modType: "iostore" | "pak" | "ue4ss";
+  /** Which UE4SS start pass a mod belongs to; null for packaged mods. */
+  runtimeKind: "native" | "script" | "mixed" | null;
   enabled: boolean;
   priority: number | null;
   supported: boolean;
@@ -122,6 +137,8 @@ export interface ConflictGroup {
 
 export interface LoadOrderState {
   entries: LoadOrderEntry[];
+  /** UE4SS mods in the order the runtime starts them, first to last. */
+  ue4ssEntries: LoadOrderEntry[];
   activeConflicts: ConflictGroup[];
   potentialConflicts: ConflictGroup[];
   unapplied: boolean;
@@ -156,11 +173,13 @@ export interface ModFile {
 
 export interface ModPreview {
   stagingId: string;
+  /** The archive or folder this candidate was read from. */
+  sourcePath: string;
   name: string;
   version: string | null;
   author: string | null;
   description: string | null;
-  modType: "iostore" | "pak" | "ue4ss";
+  modType: PreviewType;
   files: string[];
   warnings: string[];
   valid: boolean;
@@ -172,6 +191,7 @@ export interface ModPreview {
   compatibilityMessage: string;
   testedBuilds: string[];
   conflicts: PreviewConflict[];
+  replaces: ReplacedMod | null;
   recommendedPriority: number | null;
   loadOrderSupported: boolean;
   loadOrderSupportReason: string | null;

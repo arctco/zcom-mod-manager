@@ -40,7 +40,8 @@ pub struct ToolInfo {
 pub struct Ue4ssInfo {
     pub installed: bool,
     pub healthy: bool,
-    pub lua_mods: usize,
+    /// UE4SS mod folders present in the runtime, script and DLL mods alike.
+    pub mod_count: usize,
     pub log_found: bool,
     pub proton_override: Option<bool>,
     pub message: Option<String>,
@@ -110,6 +111,10 @@ pub struct LoadOrderEntry {
     pub id: String,
     pub name: String,
     pub mod_type: String,
+    /// For a UE4SS mod, which of the runtime's start passes it belongs to:
+    /// `native` for a DLL mod, `script` for a Lua mod, `mixed` when a mod
+    /// ships both. `None` for packaged mods.
+    pub runtime_kind: Option<String>,
     pub enabled: bool,
     pub priority: Option<i64>,
     pub supported: bool,
@@ -134,6 +139,10 @@ pub struct ConflictGroup {
 #[serde(rename_all = "camelCase")]
 pub struct LoadOrderState {
     pub entries: Vec<LoadOrderEntry>,
+    /// UE4SS mods in the order the runtime starts them, first to last. They are
+    /// ordered by `mods.txt` rather than by deployed file name, so they are a
+    /// separate list rather than another row in `entries`.
+    pub ue4ss_entries: Vec<LoadOrderEntry>,
     pub active_conflicts: Vec<ConflictGroup>,
     pub potential_conflicts: Vec<ConflictGroup>,
     pub unapplied: bool,
@@ -205,17 +214,34 @@ pub struct StagedMod {
     pub author: Option<String>,
     pub description: Option<String>,
     pub mod_type: String,
-    pub deployment_key: String,
+    /// UE4SS mod folder names this payload owns. An archive regularly ships
+    /// several, and every one needs its own line in `mods.txt`.
+    pub deployment_keys: Vec<String>,
     pub files: Vec<PayloadFile>,
     pub packages: Vec<String>,
     pub verification: String,
     pub verification_details: Option<String>,
 }
 
+/// An installed mod that a candidate would take the place of, so the interface
+/// can offer an upgrade instead of a deployment conflict.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplacedMod {
+    pub mod_id: String,
+    pub name: String,
+    pub version: Option<String>,
+    /// Why this candidate lands on the same files.
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModPreview {
     pub staging_id: String,
+    /// The archive or folder this candidate was read from, so the interface can
+    /// hand a runtime package back to the UE4SS installer.
+    pub source_path: String,
     pub name: String,
     pub version: Option<String>,
     pub author: Option<String>,
@@ -232,6 +258,8 @@ pub struct ModPreview {
     pub compatibility_message: String,
     pub tested_builds: Vec<String>,
     pub conflicts: Vec<PreviewConflict>,
+    /// The installed mod this one would replace, when there is one.
+    pub replaces: Option<ReplacedMod>,
     pub recommended_priority: Option<i64>,
     pub load_order_supported: bool,
     pub load_order_support_reason: Option<String>,

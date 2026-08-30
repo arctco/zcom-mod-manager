@@ -2,6 +2,58 @@
 
 All notable changes are documented here.
 
+## 0.3.0
+
+- Added UE4SS start-order management. The Load order tab lists UE4SS mods in
+  start order and writes the managed block of `mods.txt` back. The runtime uses
+  two passes — every DLL mod starts as UE4SS initializes, the Lua mods only once
+  the scripting runtime exists — so the editor sets order within each pass and
+  normalizes any request to interleave them. Comments, blank lines, and the
+  runtime's own entries keep their position, and mods installed before this
+  release keep the order the file already has.
+- Added in-place upgrades. A newer build of an installed mod is recognized at
+  inspection and offered as a replacement instead of a deployment conflict. The
+  previous version's files are moved aside rather than deleted, so a failure
+  anywhere in the new installation puts them back and leaves the old version
+  installed. The replacement keeps its predecessor's position in the load order,
+  and inherits the original files a game-folder mod displaced.
+- Every UE4SS mod folder in an archive now installs as its own library entry,
+  so mods that shipped together can be enabled, ordered, and removed separately.
+- UE4SS DLL mods install. A mod folder is recognized by `Scripts/main.lua` or
+  `dlls/*.dll`, so native mods such as Unique Talents for All and ZCUnlocked
+  are no longer rejected as unrecognized payloads.
+- Every UE4SS mod folder inside one archive is installed, instead of only the
+  first, each with its own `mods.txt` line.
+- Archives written on Windows with `\` separators extract correctly on Linux.
+  Their entries previously became single files with backslashes in the name, so
+  the mod layout never appeared and detection failed.
+- Mods are named after the download rather than after the first file inside it.
+  Nexus publishing metadata (mod id, version, upload stamp, and the random
+  suffix) is stripped, and the version it carries is kept.
+- Mod names can be edited before installing and renamed afterwards from the
+  library. Renaming changes the label only; deployed files keep their names.
+- Added game-folder mods: ReShade and other loader shims, replacement movies
+  and audio, and `LogicMods` blueprint packs. A file the mod replaces is kept
+  in the managed library and restored when the mod is disabled or removed.
+- A UE4SS runtime package dropped on the installer is now recognized as the
+  runtime and offered as a runtime install, instead of being taken apart into
+  the mods it ships.
+- An archive holding several mods is previewed as several mods, each named and
+  installed on its own.
+- Files an archive contains that are not part of a recognized layout are listed
+  before installing, and native code inside a mod is called out as such rather
+  than reported as ignored.
+- The UE4SS mod count on Home and in diagnostics counts DLL mods too.
+- The load-order tab now says where the mods it does not list are ordered
+  instead, so a library of UE4SS mods no longer looks like the editor lost them.
+- Fixed doubled event subscriptions. The unsubscribe handle arrives after the
+  effect is cleaned up, so every listener was registered twice: one dropped
+  archive was inspected twice and one `nxm://` link would download twice. A
+  superseded inspection now also releases its own extraction sandbox, and stale
+  sandboxes are cleared at startup.
+- Library row actions are laid out as two rows of three; six buttons never fit
+  the single row they were given.
+
 ## 0.2.0
 
 - Fixed Home and Settings folder actions by moving trusted path opening behind

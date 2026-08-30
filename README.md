@@ -7,7 +7,8 @@ A dedicated open-source mod manager for **Star Wars: Zero Company**.
 
 ZCOM Mod Manager understands Zero Company mod payloads instead of
 treating them as arbitrary files. It discovers Steam installations, validates
-IoStore containers with retoc, manages UE4SS Lua mods, detects package overlap,
+IoStore containers with retoc, manages UE4SS script and DLL mods, installs
+game-folder mods such as ReShade, detects package overlap,
 records SHA-256 ownership, and treats Linux/Proton as a first-class platform.
 
 > This is an independent community project. It is not affiliated with or
@@ -74,11 +75,53 @@ is installed when supplied. retoc must verify every UTOC before installation.
 
 A conventional `Example_P.pak` payload is supported and deployed to `~mods`.
 
-### UE4SS Lua mods
+### UE4SS mods
 
-Both `Scripts/main.lua` and `scripts/main.lua` layouts are recognized. UE4SS
-must already have a healthy Zero Company layout. ZCOM Mod Manager does not
-redistribute UE4SS.
+A UE4SS mod is a folder the runtime loads by name, holding either payload:
+
+```text
+MyMod/Scripts/main.lua
+MyMod/dlls/main.dll
+```
+
+Both are recognized, in any capitalization, at any nesting depth. An archive
+that ships several mod folders installs each as its own entry, so they can be
+enabled, ordered, and removed separately. UE4SS starts mods in the order
+`mods.txt` lists them, and that order is editable on the Load order tab; the
+runtime's own entries and comments keep their place. UE4SS must already have a healthy Zero Company
+layout. ZCOM Mod Manager does not redistribute UE4SS; drop a downloaded runtime
+package on the installer and it is recognized as the runtime rather than as a
+mod.
+
+### Game-folder mods
+
+Mods that the game reads from its own folders are installed from three
+recognized layouts:
+
+```text
+AnyFolder/SWZeroCompany/Content/Movies/Intro.mp4   deployed relative to the game
+LogicMods/Blueprint_P.pak                          deployed to Content/Paks/LogicMods
+ReShade/dxgi.dll + ReShade.ini + shaders           deployed to Binaries/Win64
+```
+
+This is the only mod type that replaces an existing file. The original is kept
+in the managed library and restored when the mod is disabled or uninstalled,
+and a file another installed mod owns is never overwritten.
+
+### Updating a mod
+
+Installing a newer build of a mod you already have is recognized at inspection:
+the preview offers to replace the installed version rather than reporting a
+deployment conflict. The previous version's files are moved aside, not deleted,
+so a failed upgrade puts them back and leaves the old version installed. The
+replacement keeps its predecessor's position in the load order.
+
+### Naming
+
+A mod is named after the download it came from, with Nexus publishing metadata
+removed, so `ZCUnlocked 34 1.3 2026-08-30T07-32Z i9WZfkaQ7.zip` installs as
+"ZC Unlocked" at version 1.3. Names are editable before installing and can be
+changed later from the library; renaming never touches deployed file names.
 
 ## Installation
 

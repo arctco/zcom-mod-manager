@@ -21,7 +21,7 @@
         "strict": { "type": "boolean", "default": false }
       }
     },
-    "type": { "type": "array", "items": { "enum": ["iostore", "pak", "ue4ss"] }, "minItems": 1, "uniqueItems": true },
+    "type": { "type": "array", "items": { "enum": ["iostore", "pak", "ue4ss", "gamedir"] }, "minItems": 1, "uniqueItems": true },
     "requires": { "type": "object", "properties": { "ue4ss": { "type": "boolean" } } }
   }
 }

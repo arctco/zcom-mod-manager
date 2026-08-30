@@ -81,6 +81,10 @@ fn support(summary: &ModSummary) -> (bool, Option<String>) {
                     .into(),
             ),
         ),
+        "gamedir" => (
+            false,
+            Some("Game-folder mods are placed at fixed paths and are not ordered.".into()),
+        ),
         _ => (
             false,
             Some("UE4SS mods use their own runtime ordering.".into()),
@@ -168,6 +172,134 @@ fn conflicts_with_priorities(
         .collect())
 }
 
+/// UE4SS mods in runtime start order.
+///
+/// `mods.txt` is read top to bottom, so the first line starts first: the
+/// opposite of the packaged list, where the highest priority wins. The two are
+/// presented as separate lists for that reason.
+/// Which of the runtime's start passes a UE4SS mod belongs to.
+///
+/// UE4SS does not start every mod in one sequence. It starts the DLL mods from
+/// the `mods.txt` order first, and only once the Lua state exists does it walk
+/// `mods.txt` again for the script mods. A DLL mod therefore always starts
+/// before every Lua mod, whatever the file says, and the two are ordered
+/// independently rather than interleaved.
+fn runtime_kind(item: &ModSummary) -> &'static str {
+    let holds = |folder: &str, extension: &str| {
+        item.files.iter().any(|file| {
+            let path = file.destination.to_ascii_lowercase().replace('\\', "/");
+            path.contains(folder) && path.ends_with(extension)
+        })
+    };
+    match (holds("/dlls/", ".dll"), holds("/scripts/", ".lua")) {
+        (true, true) => "mixed",
+        (true, false) => "native",
+        _ => "script",
+    }
+}
+
+/// DLL mods start before Lua mods, so they rank first. A mod shipping both
+/// starts its native half in the first pass, so it ranks with the DLL mods.
+fn kind_rank(kind: &str) -> u8 {
+    match kind {
+        "native" | "mixed" => 0,
+        _ => 1,
+    }
+}
+
+fn ue4ss_entries(mods: &[ModSummary]) -> Vec<LoadOrderEntry> {
+    let mut items: Vec<(&ModSummary, &'static str)> = mods
+        .iter()
+        .filter(|item| item.mod_type == "ue4ss")
+        .map(|item| (item, runtime_kind(item)))
+        .collect();
+    items.sort_by(|(left, left_kind), (right, right_kind)| {
+        kind_rank(left_kind)
+            .cmp(&kind_rank(right_kind))
+            .then_with(|| match (left.load_priority, right.load_priority) {
+                (Some(left), Some(right)) => left.cmp(&right),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                // A mod installed before start order was recorded has no slot.
+                // Each install appended its entry to `mods.txt`, so
+                // installation order is the order the file already has.
+                (None, None) => left.installed_at.cmp(&right.installed_at),
+            })
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    items
+        .into_iter()
+        .map(|(item, kind)| LoadOrderEntry {
+            id: item.id.clone(),
+            name: item.name.clone(),
+            mod_type: item.mod_type.clone(),
+            runtime_kind: Some(kind.into()),
+            enabled: item.enabled,
+            priority: item.load_priority,
+            supported: true,
+            support_reason: None,
+            applied: item.load_priority.is_some(),
+            active_conflict_count: 0,
+            potential_conflict_count: 0,
+        })
+        .collect()
+}
+
+/// Records a UE4SS start order and writes it to `mods.txt`.
+///
+/// Nothing on disk moves: the runtime reads the order from that one file, so
+/// applying it is a single text rewrite with no renames to roll back.
+pub fn apply_ue4ss_order(
+    conn: &mut Connection,
+    game: &Path,
+    ordered_ids: &[String],
+) -> Result<LoadOrderState> {
+    let mods = database::list_mods(conn)?;
+    let known: HashMap<&str, &ModSummary> = mods
+        .iter()
+        .filter(|item| item.mod_type == "ue4ss")
+        .map(|item| (item.id.as_str(), item))
+        .collect();
+    let proposed: BTreeSet<&String> = ordered_ids.iter().collect();
+    if proposed.len() != ordered_ids.len() {
+        return Err(AppError::InvalidLoadOrder(
+            "the order contains a duplicate mod".into(),
+        ));
+    }
+    if proposed.len() != known.len()
+        || ordered_ids
+            .iter()
+            .any(|id| !known.contains_key(id.as_str()))
+    {
+        return Err(AppError::InvalidLoadOrder(
+            "the order must list every installed UE4SS mod exactly once".into(),
+        ));
+    }
+    // A caller may hand back a sequence that interleaves the two passes. The
+    // runtime cannot honour that, so it is normalised into pass order here
+    // rather than recorded as something that will not happen.
+    let mut ordered_ids: Vec<String> = ordered_ids.to_vec();
+    ordered_ids.sort_by_key(|id| {
+        known
+            .get(id.as_str())
+            .map_or(1, |item| kind_rank(runtime_kind(item)))
+    });
+    let mut lines = Vec::new();
+    for id in &ordered_ids {
+        let record = database::mod_record(conn, id)?;
+        for key in record.keys {
+            lines.push((key, record.enabled));
+        }
+    }
+    let tx = conn.transaction()?;
+    for (index, id) in ordered_ids.iter().enumerate() {
+        database::set_load_priority(&tx, id, index as i64 + 1)?;
+    }
+    tx.commit()?;
+    crate::ue4ss::write_order(game, &lines)?;
+    state(conn)
+}
+
 pub fn state(conn: &Connection) -> Result<LoadOrderState> {
     let mods = database::list_mods(conn)?;
     let priorities = mods
@@ -179,7 +311,10 @@ pub fn state(conn: &Connection) -> Result<LoadOrderState> {
         .collect::<HashMap<_, _>>();
     let conflicts = conflicts_with_priorities(conn, &mods, &priorities)?;
     let mut entries = Vec::new();
-    for item in mods.iter().filter(|item| item.mod_type != "ue4ss") {
+    for item in mods
+        .iter()
+        .filter(|item| matches!(item.mod_type.as_str(), "pak" | "iostore"))
+    {
         let (supported, support_reason) = support(item);
         let records = database::file_records(conn, &item.id)?;
         let applied = if supported {
@@ -206,6 +341,7 @@ pub fn state(conn: &Connection) -> Result<LoadOrderState> {
             id: item.id.clone(),
             name: item.name.clone(),
             mod_type: item.mod_type.clone(),
+            runtime_kind: None,
             enabled: item.enabled,
             priority: item.load_priority,
             supported,
@@ -238,6 +374,7 @@ pub fn state(conn: &Connection) -> Result<LoadOrderState> {
         .filter(|group| group.potential)
         .collect();
     Ok(LoadOrderState {
+        ue4ss_entries: ue4ss_entries(&mods),
         unapplied: !priorities_contiguous
             || entries
                 .iter()
@@ -257,7 +394,7 @@ fn build_plan(conn: &Connection, ordered_ids: &[String]) -> Result<PlannedOrder>
     let mods = database::list_mods(conn)?;
     let supported = mods
         .iter()
-        .filter(|item| item.mod_type != "ue4ss" && support(item).0)
+        .filter(|item| matches!(item.mod_type.as_str(), "pak" | "iostore") && support(item).0)
         .map(|item| item.id.clone())
         .collect::<BTreeSet<_>>();
     let proposed = ordered_ids.iter().cloned().collect::<BTreeSet<_>>();
@@ -578,7 +715,7 @@ mod tests {
             author: None,
             description: None,
             mod_type: "iostore".into(),
-            deployment_key: String::new(),
+            deployment_keys: Vec::new(),
             files,
             packages: packages.iter().map(|value| (*value).into()).collect(),
             verification: "not-required".into(),

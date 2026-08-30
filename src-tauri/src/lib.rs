@@ -68,6 +68,9 @@ pub fn run() {
             for dir in [&data_dir, &cache_dir, &mods_dir, &logs_dir] {
                 std::fs::create_dir_all(dir)?
             }
+            // Extractions from a previous run are only useful to previews that
+            // no longer exist, so the sandbox starts empty.
+            let _ = std::fs::remove_dir_all(cache_dir.join("staging"));
             let db_path = data_dir.join("zcom-mod-manager.sqlite3");
             let conn = database::open(&db_path)
                 .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
@@ -113,8 +116,11 @@ pub fn run() {
             commands::get_load_order_state,
             commands::preview_load_order,
             commands::apply_load_order,
+            commands::apply_ue4ss_order,
             commands::inspect_mod,
             commands::install_mod,
+            commands::discard_previews,
+            commands::rename_mod,
             commands::set_mod_enabled,
             commands::uninstall_mod,
             commands::verify_mod,

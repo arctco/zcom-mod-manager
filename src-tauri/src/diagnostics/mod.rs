@@ -82,7 +82,7 @@ pub fn run(
             "unknown"
         },
         if ue4ss.healthy {
-            format!("Healthy; {} Lua mod(s)", ue4ss.lua_mods)
+            format!("Healthy; {} UE4SS mod(s)", ue4ss.mod_count)
         } else if ue4ss.installed {
             "Incomplete installation".into()
         } else {
@@ -91,7 +91,7 @@ pub fn run(
         ue4ss.message.clone().or_else(|| {
             (!ue4ss.installed).then(|| {
                 format!(
-                    "Only needed for Lua mods. Get the tested Zero Company build from {}, then use Home to install it.",
+                    "Only needed for UE4SS script and DLL mods. Get the tested Zero Company build from {}, then use Home to install it.",
                     crate::ue4ss::DOWNLOAD_URL
                 )
             })

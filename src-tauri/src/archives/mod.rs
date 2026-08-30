@@ -11,6 +11,10 @@ use walkdir::WalkDir;
 pub struct Staging {
     pub root: PathBuf,
     pub warnings: Vec<String>,
+    /// Archive-relative paths that carry native code. Whether those matter is a
+    /// question about the mod layout rather than about the archive, so the
+    /// judgement is left to `crate::mods`.
+    pub executables: Vec<String>,
 }
 
 fn unsafe_name(path: &Path) -> bool {
@@ -23,17 +27,50 @@ fn unsafe_name(path: &Path) -> bool {
         })
 }
 
+/// Interprets an archive member name as a relative path.
+///
+/// ZIP mandates `/` as the separator, but Windows packaging tools regularly
+/// write `\`. A non-Windows host then reads `ue4ss\Mods\X\main.dll` as a single
+/// long file name, the mod folder never materializes, and detection fails on an
+/// archive that installs correctly on Windows. Both separators are therefore
+/// treated as directory boundaries on every platform.
+fn archive_relative(name: &str) -> Option<PathBuf> {
+    // An absolute member name is never legitimate, and rebasing it silently
+    // would hide an archive that tried to write outside its own tree.
+    if name.starts_with('/') || name.starts_with('\\') {
+        return None;
+    }
+    let mut path = PathBuf::new();
+    for part in name.split(['/', '\\']) {
+        match part {
+            "" | "." => continue,
+            ".." => return None,
+            // A Windows drive prefix survives as an ordinary component on other
+            // platforms, so it is rejected by hand rather than by `unsafe_name`.
+            _ if part.contains(':') || part.contains('\0') => return None,
+            _ => path.push(part),
+        }
+    }
+    (!path.as_os_str().is_empty() && !unsafe_name(&path)).then_some(path)
+}
+
 fn suspicious(path: &Path) -> bool {
     matches!(
         path.extension()
             .and_then(|e| e.to_str())
             .map(|e| e.to_ascii_lowercase())
             .as_deref(),
-        Some("exe" | "bat" | "cmd" | "ps1" | "dll" | "sh")
+        Some("exe" | "bat" | "cmd" | "ps1" | "dll" | "sh" | "msi" | "scr" | "vbs")
     )
 }
 
-fn copy_tree(source: &Path, destination: &Path, warnings: &mut Vec<String>) -> Result<()> {
+fn note_executable(executables: &mut Vec<String>, relative: &Path) {
+    if suspicious(relative) {
+        executables.push(relative.display().to_string().replace('\\', "/"));
+    }
+}
+
+fn copy_tree(source: &Path, destination: &Path, executables: &mut Vec<String>) -> Result<()> {
     for entry in WalkDir::new(source).follow_links(false) {
         let entry = entry.map_err(|e| AppError::Other(e.to_string()))?;
         let rel = entry
@@ -56,9 +93,7 @@ fn copy_tree(source: &Path, destination: &Path, warnings: &mut Vec<String>) -> R
         if entry.file_type().is_dir() {
             fs::create_dir_all(&target)?;
         } else {
-            if suspicious(rel) {
-                warnings.push(format!("Ignored executable content: {}", rel.display()));
-            }
+            note_executable(executables, rel);
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -68,18 +103,13 @@ fn copy_tree(source: &Path, destination: &Path, warnings: &mut Vec<String>) -> R
     Ok(())
 }
 
-fn extract_zip(source: &Path, destination: &Path, warnings: &mut Vec<String>) -> Result<()> {
+fn extract_zip(source: &Path, destination: &Path, executables: &mut Vec<String>) -> Result<()> {
     let file = fs::File::open(source)?;
     let mut archive = zip::ZipArchive::new(file)?;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
-        let enclosed = entry
-            .enclosed_name()
-            .ok_or_else(|| AppError::UnsafeArchive(entry.name().to_string()))?
-            .to_path_buf();
-        if unsafe_name(&enclosed) {
-            return Err(AppError::UnsafeArchive(entry.name().to_string()));
-        }
+        let enclosed = archive_relative(entry.name())
+            .ok_or_else(|| AppError::UnsafeArchive(entry.name().to_string()))?;
         #[cfg(unix)]
         if entry.unix_mode().is_some_and(|m| m & 0o170000 == 0o120000) {
             return Err(AppError::UnsafeArchive(format!(
@@ -88,16 +118,13 @@ fn extract_zip(source: &Path, destination: &Path, warnings: &mut Vec<String>) ->
             )));
         }
         let target = destination.join(&enclosed);
-        if entry.is_dir() {
+        // A directory entry may also be spelled with a trailing separator that
+        // `archive_relative` has already dropped, so both forms are checked.
+        if entry.is_dir() || entry.name().ends_with(['/', '\\']) {
             fs::create_dir_all(&target)?;
             continue;
         }
-        if suspicious(&enclosed) {
-            warnings.push(format!(
-                "Ignored executable content: {}",
-                enclosed.display()
-            ));
-        }
+        note_executable(executables, &enclosed);
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -117,14 +144,54 @@ fn find_7z() -> Option<PathBuf> {
     })
 }
 
-fn extract_7z(source: &Path, destination: &Path, warnings: &mut Vec<String>) -> Result<()> {
+/// Rebuilds directories from member names that kept `\` as their separator.
+/// `extract_zip` handles this while reading, but an external extractor writes
+/// whatever the archive contained, so the staged tree is repaired afterwards.
+fn split_backslash_names(root: &Path) -> Result<()> {
+    loop {
+        let offender = WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(std::result::Result::ok)
+            .find(|entry| {
+                entry.file_type().is_file() && entry.file_name().to_string_lossy().contains('\\')
+            })
+            .map(|entry| entry.path().to_path_buf());
+        let Some(offender) = offender else {
+            return Ok(());
+        };
+        let name = offender.file_name().unwrap_or_default().to_string_lossy();
+        let rebuilt =
+            archive_relative(&name).ok_or_else(|| AppError::UnsafeArchive(name.to_string()))?;
+        let target = offender.parent().unwrap_or(root).join(rebuilt);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::rename(&offender, &target)?;
+    }
+}
+
+fn extract_7z(source: &Path, destination: &Path, executables: &mut Vec<String>) -> Result<()> {
     let seven = find_7z().ok_or(AppError::SevenZipNotFound)?;
     let listing = Command::new(&seven)
         .args(["l", "-slt", "--"])
         .arg(source)
         .output()?;
     if !listing.status.success() {
-        return Err(AppError::Other("7z could not read the archive".into()));
+        // RAR support is a separate, non-free codec that many 7-Zip builds omit,
+        // and the failure otherwise looks like a corrupt download.
+        return Err(AppError::Other(format!(
+            "7z could not read this archive. {}",
+            if source
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("rar"))
+            {
+                "RAR needs a 7-Zip build with the RAR codec; extract it yourself and install the \
+                 folder instead."
+            } else {
+                "It may be corrupt or use an unsupported compression method."
+            }
+        )));
     }
     let text = String::from_utf8_lossy(&listing.stdout);
     let mut entries = false;
@@ -137,13 +204,9 @@ fn extract_7z(source: &Path, destination: &Path, warnings: &mut Vec<String>) -> 
             continue;
         }
         if let Some(name) = line.strip_prefix("Path = ") {
-            let path = Path::new(name);
-            if unsafe_name(path) {
-                return Err(AppError::UnsafeArchive(name.into()));
-            }
-            if suspicious(path) {
-                warnings.push(format!("Ignored executable content: {name}"));
-            }
+            let path =
+                archive_relative(name).ok_or_else(|| AppError::UnsafeArchive(name.to_string()))?;
+            note_executable(executables, &path);
         }
     }
     let output = Command::new(seven)
@@ -166,7 +229,7 @@ fn extract_7z(source: &Path, destination: &Path, warnings: &mut Vec<String>) -> 
             ));
         }
     }
-    Ok(())
+    split_backslash_names(destination)
 }
 
 pub fn stage(source: &Path, cache: &Path) -> Result<Staging> {
@@ -177,9 +240,9 @@ pub fn stage(source: &Path, cache: &Path) -> Result<Staging> {
     }
     let root = cache.join("staging").join(Uuid::new_v4().to_string());
     fs::create_dir_all(&root)?;
-    let mut warnings = Vec::new();
+    let mut executables = Vec::new();
     let result = if source.is_dir() {
-        copy_tree(source, &root, &mut warnings)
+        copy_tree(source, &root, &mut executables)
     } else {
         match source
             .extension()
@@ -187,8 +250,8 @@ pub fn stage(source: &Path, cache: &Path) -> Result<Staging> {
             .map(|e| e.to_ascii_lowercase())
             .as_deref()
         {
-            Some("zip") => extract_zip(source, &root, &mut warnings),
-            Some("7z") => extract_7z(source, &root, &mut warnings),
+            Some("zip") => extract_zip(source, &root, &mut executables),
+            Some("7z" | "rar") => extract_7z(source, &root, &mut executables),
             Some("pak" | "utoc" | "ucas") => {
                 let stem = source.file_stem().unwrap_or_default();
                 for ext in ["pak", "utoc", "ucas"] {
@@ -209,7 +272,11 @@ pub fn stage(source: &Path, cache: &Path) -> Result<Staging> {
         let _ = fs::remove_dir_all(&root);
         return Err(error);
     }
-    Ok(Staging { root, warnings })
+    Ok(Staging {
+        root,
+        warnings: Vec::new(),
+        executables,
+    })
 }
 
 #[cfg(test)]
@@ -217,27 +284,75 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
     use zip::write::SimpleFileOptions;
+
+    fn zip_with(path: &Path, entries: &[(&str, &[u8])]) {
+        let mut writer = zip::ZipWriter::new(fs::File::create(path).unwrap());
+        for (name, body) in entries {
+            writer
+                .start_file(*name, SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(body).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
     #[test]
     fn rejects_zip_traversal() {
         let d = tempdir().unwrap();
         let path = d.path().join("bad.zip");
-        let f = fs::File::create(&path).unwrap();
-        let mut z = zip::ZipWriter::new(f);
-        z.start_file("../../evil.pak", SimpleFileOptions::default())
-            .unwrap();
-        z.write_all(b"malicious").unwrap();
-        z.finish().unwrap();
+        zip_with(&path, &[("../../evil.pak", b"malicious")]);
         assert!(matches!(
             stage(&path, d.path()),
             Err(AppError::UnsafeArchive(_))
         ));
     }
+
+    #[test]
+    fn rejects_traversal_spelled_with_backslashes() {
+        let d = tempdir().unwrap();
+        let path = d.path().join("bad.zip");
+        zip_with(&path, &[("..\\..\\evil.pak", b"malicious")]);
+        assert!(matches!(
+            stage(&path, d.path()),
+            Err(AppError::UnsafeArchive(_))
+        ));
+    }
+
     #[test]
     fn absolute_path_is_unsafe() {
         assert!(unsafe_name(Path::new("/tmp/evil")));
         assert!(unsafe_name(Path::new("../evil")));
         assert!(!unsafe_name(Path::new("safe/mod.pak")));
     }
+
+    #[test]
+    fn windows_separators_become_directories() {
+        let d = tempdir().unwrap();
+        let path = d.path().join("windows.zip");
+        zip_with(
+            &path,
+            &[
+                ("ue4ss\\Mods\\ZCUnlocked\\enabled.txt", b"1"),
+                ("ue4ss\\Mods\\ZCUnlocked\\dlls\\main.dll", b"MZ"),
+            ],
+        );
+        let staged = stage(&path, d.path()).unwrap();
+        assert!(staged
+            .root
+            .join("ue4ss/Mods/ZCUnlocked/dlls/main.dll")
+            .is_file());
+        assert_eq!(
+            staged.executables,
+            vec!["ue4ss/Mods/ZCUnlocked/dlls/main.dll"]
+        );
+    }
+
+    #[test]
+    fn drive_letters_are_rejected() {
+        assert!(archive_relative("C:\\Windows\\evil.dll").is_none());
+        assert!(archive_relative("mods/Good_P.pak").is_some());
+    }
+
     #[test]
     fn directory_symlink_is_rejected() {
         #[cfg(unix)]
@@ -255,11 +370,7 @@ mod tests {
     fn rejects_absolute_zip_path() {
         let d = tempdir().unwrap();
         let path = d.path().join("absolute.zip");
-        let mut z = zip::ZipWriter::new(fs::File::create(&path).unwrap());
-        z.start_file("/tmp/evil.pak", SimpleFileOptions::default())
-            .unwrap();
-        z.write_all(b"malicious").unwrap();
-        z.finish().unwrap();
+        zip_with(&path, &[("/tmp/evil.pak", b"malicious")]);
         assert!(matches!(
             stage(&path, d.path()),
             Err(AppError::UnsafeArchive(_))
@@ -284,5 +395,15 @@ mod tests {
         assert!(status.success());
         let staged = stage(&archive, d.path()).unwrap();
         assert!(staged.root.join("SomeMod/Nested_P.pak").is_file());
+    }
+
+    #[test]
+    fn repairs_names_an_external_extractor_left_flat() {
+        let d = tempdir().unwrap();
+        let root = d.path().join("staged");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("ue4ss\\Mods\\Thing\\enabled.txt"), b"1").unwrap();
+        split_backslash_names(&root).unwrap();
+        assert!(root.join("ue4ss/Mods/Thing/enabled.txt").is_file());
     }
 }

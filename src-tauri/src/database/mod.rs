@@ -13,6 +13,7 @@ pub fn open(path: &Path) -> Result<Connection> {
       CREATE TABLE IF NOT EXISTS mods(id TEXT PRIMARY KEY, name TEXT NOT NULL, version TEXT, mod_type TEXT NOT NULL, deployment_key TEXT NOT NULL DEFAULT '', source_archive TEXT, installed_at TEXT NOT NULL, enabled INTEGER NOT NULL, installed_build TEXT);
       CREATE TABLE IF NOT EXISTS mod_files(id INTEGER PRIMARY KEY, mod_id TEXT NOT NULL REFERENCES mods(id) ON DELETE CASCADE, library_relative TEXT NOT NULL, destination TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS mod_packages(mod_id TEXT NOT NULL REFERENCES mods(id) ON DELETE CASCADE, package_id TEXT NOT NULL, PRIMARY KEY(mod_id, package_id));
+      CREATE TABLE IF NOT EXISTS mod_backups(mod_id TEXT NOT NULL REFERENCES mods(id) ON DELETE CASCADE, destination TEXT NOT NULL, backup_relative TEXT NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY(mod_id, destination));
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(1, datetime('now'));"
     )?;
     migrate_v2(&mut connection)?;
@@ -232,12 +233,65 @@ pub fn next_load_priority(conn: &Connection) -> Result<i64> {
         |row| row.get(0),
     )?)
 }
-pub fn packaged_source_name_exists(conn: &Connection, library_relative: &str) -> Result<bool> {
+
+/// UE4SS start order is a separate sequence in the same column: the packaged
+/// list is ranked highest-wins, while `mods.txt` is read first-to-last.
+pub fn next_ue4ss_priority(conn: &Connection) -> Result<i64> {
     Ok(conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM mod_files f JOIN mods m ON m.id=f.mod_id WHERE m.mod_type IN ('pak','iostore') AND lower(f.library_relative)=lower(?1))",
-        [library_relative],
+        "SELECT coalesce(max(load_priority),0)+1 FROM mods WHERE mod_type='ue4ss'",
+        [],
         |row| row.get(0),
     )?)
+}
+/// The packaged mod that already owns a payload file name, if any. `exclude`
+/// skips the mod an installation is replacing, whose files are being taken over
+/// rather than collided with.
+pub fn packaged_source_name_owner(
+    conn: &Connection,
+    library_relative: &str,
+    exclude: Option<&str>,
+) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT m.id FROM mod_files f JOIN mods m ON m.id=f.mod_id WHERE m.mod_type IN ('pak','iostore') AND lower(f.library_relative)=lower(?1) AND m.id IS NOT ?2 LIMIT 1",
+            params![library_relative, exclude],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+/// The mod that already deploys to a path, if any.
+pub fn destination_owner(
+    conn: &Connection,
+    destination: &str,
+    exclude: Option<&str>,
+) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT mod_id FROM mod_files WHERE destination=?1 AND mod_id IS NOT ?2 LIMIT 1",
+            params![destination, exclude],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+/// The UE4SS mod occupying a runtime folder name, if any.
+pub fn ue4ss_folder_owner(conn: &Connection, key: &str) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT id FROM mods WHERE mod_type='ue4ss' AND lower(deployment_key)=lower(?1) LIMIT 1",
+            [key],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+pub fn summary_of(conn: &Connection, id: &str) -> Result<(String, Option<String>)> {
+    Ok(
+        conn.query_row("SELECT name,version FROM mods WHERE id=?1", [id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?,
+    )
 }
 pub fn set_load_priority(tx: &Transaction<'_>, id: &str, priority: i64) -> Result<()> {
     tx.execute(
@@ -303,13 +357,100 @@ pub fn package_members(conn: &Connection) -> Result<Vec<(String, String)>> {
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(result)
 }
-pub fn mod_kind(conn: &Connection, id: &str) -> Result<(String, String, bool)> {
-    Ok(conn.query_row(
-        "SELECT CASE WHEN deployment_key='' THEN name ELSE deployment_key END,mod_type,enabled FROM mods WHERE id=?1",
-        [id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-    )?)
+/// What the rest of the application needs to know about an installed mod
+/// without loading its file list.
+pub struct ModRecord {
+    pub name: String,
+    pub load_priority: Option<i64>,
+    /// UE4SS mod folder names, one per line in the stored column. Rows written
+    /// before an archive could hold several mods carry a single key, and rows
+    /// that predate the column fall back to the mod name.
+    pub keys: Vec<String>,
+    pub mod_type: String,
+    pub enabled: bool,
 }
+
+pub fn mod_record(conn: &Connection, id: &str) -> Result<ModRecord> {
+    let (name, stored, mod_type, enabled, load_priority) = conn.query_row(
+        "SELECT name,deployment_key,mod_type,enabled,load_priority FROM mods WHERE id=?1",
+        [id],
+        |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, bool>(3)?,
+                r.get::<_, Option<i64>>(4)?,
+            ))
+        },
+    )?;
+    let mut keys: Vec<String> = stored
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect();
+    if keys.is_empty() && mod_type == "ue4ss" {
+        keys.push(name.clone());
+    }
+    Ok(ModRecord {
+        name,
+        load_priority,
+        keys,
+        mod_type,
+        enabled,
+    })
+}
+
+pub fn rename_mod(conn: &Connection, id: &str, name: &str) -> Result<()> {
+    let changed = conn.execute("UPDATE mods SET name=?2 WHERE id=?1", params![id, name])?;
+    if changed == 0 {
+        return Err(crate::error::AppError::Other(
+            "That mod is no longer installed.".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub fn record_backup(
+    tx: &Connection,
+    mod_id: &str,
+    destination: &str,
+    backup_relative: &str,
+    sha256: &str,
+) -> Result<()> {
+    tx.execute(
+        "INSERT INTO mod_backups(mod_id,destination,backup_relative,sha256) VALUES(?1,?2,?3,?4) ON CONFLICT(mod_id,destination) DO UPDATE SET backup_relative=excluded.backup_relative,sha256=excluded.sha256",
+        params![mod_id, destination, backup_relative, sha256],
+    )?;
+    Ok(())
+}
+
+/// The recorded original for one destination, as `(library path, checksum)`.
+pub fn backup_for(
+    conn: &Connection,
+    mod_id: &str,
+    destination: &str,
+) -> Result<Option<(String, String)>> {
+    Ok(conn
+        .query_row(
+            "SELECT backup_relative,sha256 FROM mod_backups WHERE mod_id=?1 AND destination=?2",
+            params![mod_id, destination],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?)
+}
+
+pub fn backups(conn: &Connection, mod_id: &str) -> Result<Vec<(String, String, String)>> {
+    let mut statement = conn.prepare(
+        "SELECT destination,backup_relative,sha256 FROM mod_backups WHERE mod_id=?1 ORDER BY destination",
+    )?;
+    let rows = statement
+        .query_map([mod_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 pub fn conflict_count(conn: &Connection) -> Result<usize> {
     let package:i64=conn.query_row("SELECT count(*) FROM (SELECT p.package_id FROM mod_packages p JOIN mods m ON m.id=p.mod_id WHERE m.enabled=1 GROUP BY p.package_id HAVING count(*)>1)",[],|r|r.get(0))?;
     let files:i64=conn.query_row("SELECT count(*) FROM (SELECT f.destination FROM mod_files f JOIN mods m ON m.id=f.mod_id WHERE m.enabled=1 GROUP BY f.destination HAVING count(*)>1)",[],|r|r.get(0))?;

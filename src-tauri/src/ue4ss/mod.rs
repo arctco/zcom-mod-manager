@@ -47,13 +47,8 @@ pub fn detect(game: Option<&Path>, compat_data: Option<&Path>) -> Ue4ssInfo {
     let mods = root.join("Mods");
     let installed = dll || core || root.exists();
     let healthy = dll && core && mods.is_dir();
-    let lua_mods = if mods.is_dir() {
-        WalkDir::new(&mods)
-            .max_depth(4)
-            .into_iter()
-            .filter_map(std::result::Result::ok)
-            .filter(|e| e.file_type().is_file() && e.file_name().eq_ignore_ascii_case("main.lua"))
-            .count()
+    let mod_count = if mods.is_dir() {
+        installed_mod_folders(&mods)
     } else {
         0
     };
@@ -68,11 +63,36 @@ pub fn detect(game: Option<&Path>, compat_data: Option<&Path>) -> Ue4ssInfo {
     Ue4ssInfo {
         installed,
         healthy,
-        lua_mods,
+        mod_count,
         log_found: root.join("UE4SS.log").is_file(),
         proton_override,
         message,
     }
+}
+
+/// Counts the mod folders UE4SS will load. A mod ships Lua scripts, a native
+/// DLL, or both, so counting `main.lua` alone missed every DLL mod.
+fn installed_mod_folders(mods: &Path) -> usize {
+    WalkDir::new(mods)
+        .max_depth(4)
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .filter_map(|entry| {
+            let path = entry.path();
+            let parent = path.parent()?;
+            let holder = parent.file_name()?.to_str()?.to_ascii_lowercase();
+            let payload = match holder.as_str() {
+                "scripts" => entry.file_name().eq_ignore_ascii_case("main.lua"),
+                "dlls" => path
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("dll")),
+                _ => false,
+            };
+            payload.then(|| parent.parent().map(Path::to_path_buf))?
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
 }
 
 fn detect_proton_override(game: &Path) -> bool {
@@ -110,7 +130,7 @@ fn child(directory: &Path, name: &str) -> Option<PathBuf> {
 /// Finds the directory inside a staged archive that maps onto `Binaries/Win64`.
 /// A Zero Company UE4SS package contains `dwmapi.dll` next to a `ue4ss` folder,
 /// but publishers frequently nest that pair one or two levels deep.
-fn layout_root(staged: &Path) -> Option<PathBuf> {
+pub(crate) fn layout_root(staged: &Path) -> Option<PathBuf> {
     WalkDir::new(staged)
         .max_depth(4)
         .into_iter()
@@ -133,7 +153,7 @@ pub fn install_from(archive: &Path, game: &Path, cache: &Path) -> Result<Ue4ssIn
     result
 }
 
-fn install_staged(staged: &Path, game: &Path) -> Result<Ue4ssInstallReport> {
+pub(crate) fn install_staged(staged: &Path, game: &Path) -> Result<Ue4ssInstallReport> {
     let source = layout_root(staged).ok_or(AppError::Ue4ssPackageNotRecognized)?;
     let win64 = base(game);
     if !win64.is_dir() {
@@ -172,6 +192,61 @@ fn install_staged(staged: &Path, game: &Path) -> Result<Ue4ssInstallReport> {
     })
 }
 
+/// The mod name an entry line declares, if it declares one.
+fn entry_name(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with(';') {
+        return None;
+    }
+    let name = trimmed.split([':', '=']).next().unwrap_or("").trim();
+    (!name.is_empty()).then_some(name)
+}
+
+/// Rewrites the managed block of `mods.txt` in the given order.
+///
+/// UE4SS starts mods in the order this file lists them, so the order is the
+/// mechanism, not a label. Everything the manager does not own — the comments,
+/// the blank lines, and the runtime's own entries, including the "do not move
+/// up" keybind block — keeps its position and its relative order; the managed
+/// entries are written after it, in the order given. Any managed name already
+/// present elsewhere in the file is removed from that position first, so a mod
+/// is never listed twice.
+pub fn write_order(game: &Path, ordered: &[(String, bool)]) -> Result<()> {
+    let mods = base(game).join("ue4ss/Mods");
+    if !mods.is_dir() {
+        return Err(AppError::Ue4ssNotFound);
+    }
+    let path = mods.join("mods.txt");
+    let original = fs::read_to_string(&path).unwrap_or_default();
+    let line_ending = if original.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let managed = |name: &str| {
+        ordered
+            .iter()
+            .any(|(key, _)| key.eq_ignore_ascii_case(name))
+    };
+    let mut output: Vec<String> = original
+        .lines()
+        .filter(|line| !entry_name(line).is_some_and(managed))
+        .map(str::to_string)
+        .collect();
+    while output.last().is_some_and(|line| line.trim().is_empty()) {
+        output.pop();
+    }
+    for (key, enabled) in ordered {
+        output.push(format!("{key} : {}", if *enabled { 1 } else { 0 }));
+    }
+    let mut value = output.join(line_ending);
+    if !value.is_empty() {
+        value.push_str(line_ending)
+    }
+    fs::write(path, value)?;
+    Ok(())
+}
+
 pub fn update_mods_txt(game: &Path, name: &str, enabled: bool) -> Result<()> {
     let mods = base(game).join("ue4ss/Mods");
     if !mods.is_dir() {
@@ -187,8 +262,7 @@ pub fn update_mods_txt(game: &Path, name: &str, enabled: bool) -> Result<()> {
     let mut found = false;
     let mut output = Vec::new();
     for line in original.lines() {
-        let trimmed = line.trim();
-        let entry = trimmed.split([':', '=']).next().unwrap_or("").trim();
+        let entry = entry_name(line).unwrap_or("");
         if entry.eq_ignore_ascii_case(name) {
             let indentation = &line[..line.len() - line.trim_start().len()];
             output.push(format!(
@@ -354,6 +428,51 @@ mod tests {
             install_staged(d.path().join("staged").as_path(), &game),
             Err(AppError::Ue4ssPackageNotRecognized)
         ));
+    }
+
+    #[test]
+    fn rewrites_only_the_managed_block_of_mods_txt() {
+        let d = tempdir().unwrap();
+        let mods = d.path().join("SWZeroCompany/Binaries/Win64/ue4ss/Mods");
+        fs::create_dir_all(&mods).unwrap();
+        fs::write(
+            mods.join("mods.txt"),
+            "CheatManagerEnablerMod : 1\n\n; Built-in keybinds, do not move up!\nKeybinds : 1\nAlpha : 1\nBravo : 0\n",
+        )
+        .unwrap();
+
+        write_order(
+            d.path(),
+            &[
+                ("Bravo".into(), false),
+                ("Charlie".into(), true),
+                ("Alpha".into(), true),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(mods.join("mods.txt")).unwrap(),
+            "CheatManagerEnablerMod : 1\n\n; Built-in keybinds, do not move up!\nKeybinds : 1\nBravo : 0\nCharlie : 1\nAlpha : 1\n",
+            "runtime entries and comments keep their place; managed mods follow in order"
+        );
+    }
+
+    #[test]
+    fn ordering_never_lists_a_mod_twice() {
+        let d = tempdir().unwrap();
+        let mods = d.path().join("SWZeroCompany/Binaries/Win64/ue4ss/Mods");
+        fs::create_dir_all(&mods).unwrap();
+        fs::write(
+            mods.join("mods.txt"),
+            "alpha : 1\nKeybinds : 1\nAlpha : 1\n",
+        )
+        .unwrap();
+        write_order(d.path(), &[("Alpha".into(), true)]).unwrap();
+        assert_eq!(
+            fs::read_to_string(mods.join("mods.txt")).unwrap(),
+            "Keybinds : 1\nAlpha : 1\n"
+        );
     }
 
     #[test]

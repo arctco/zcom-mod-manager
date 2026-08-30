@@ -1,4 +1,4 @@
-# Known Limitations — 0.2.0
+# Known Limitations — 0.3.0
 
 - 7z installation uses the open-source 7-Zip command-line program available on
   the host. ZIP support is built in. A missing `7z` produces setup guidance.
@@ -8,6 +8,28 @@
 - UE4SS installation preserves `UE4SS-settings.ini`, `mods.txt`, `mods.json`,
   and every `load_order.txt`. A package shipping newer defaults for those will
   not replace an existing copy; remove yours first to adopt them.
+- Applying a UE4SS start order writes the managed entries as one block after
+  everything the manager does not own. Comments, blank lines, and the runtime's
+  own entries keep their positions, but a managed mod that was hand-placed
+  among them moves into that block. Order among managed mods is preserved, and
+  mods installed before this release keep the order the file already has.
+- UE4SS starts DLL mods and Lua mods in two separate passes: every DLL mod runs
+  as the runtime initializes, and the Lua mods only once the scripting runtime
+  exists. Order is therefore settable within each pass, never across them, and
+  a request to interleave them is normalized into what the runtime will do.
+- UE4SS start order covers `mods.txt` only. BPModLoader keeps its own list in
+  `BPModLoaderMod/load_order.txt` for blueprint mods, which the manager still
+  preserves rather than writes, so blueprint load order stays manual.
+- An upgrade is reversible until it succeeds, not atomic afterwards. If the new
+  version deploys but recording it fails, the new files are in place and the
+  error says so; the old entry is the one left behind.
+- Game-folder mods are recognized from three layouts: a tree containing
+  `SWZeroCompany`, a `LogicMods` blueprint pack, and a loader shim named after
+  the system library it replaces (`dxgi.dll`, `dinput8.dll`, and similar) with
+  the files beside it. Anything else in the archive is listed and left alone.
+- A game-folder mod is the only kind that replaces an existing file. The
+  original is kept in the managed library and restored on disable or removal,
+  but a file another mod already owns is never overwritten.
 - Lua mods bundled inside a UE4SS package are treated as part of the runtime
   and are overwritten on upgrade. Edits to a shipped mod's scripts are lost;
   copy it under a new folder name to keep changes.
@@ -24,12 +46,7 @@
 - PAK-only mods remain visible but non-orderable: the local capability fixture
   did not pass the runtime gate. Their contents are also opaque, so the manager
   cannot identify which assets a PAK-only mod wins or loses.
-- UE4SS mod order remains separate future work because UE4SS exposes more than
-  one ordering mechanism: native/Lua startup entries use `mods.txt`, while
-  BPModLoader uses its own `BPModLoaderMod/load_order.txt`. The manager currently
-  preserves those user/runtime-owned files instead of guessing across both
-  systems. A future editor needs runtime-aware parsing and Zero Company tests
-  before it can change either safely. Full profiles also remain future work.
+- Full profiles remain future work.
 - Installed mods are not checked against Nexus for newer versions yet.
 - Downloads must be started from the Nexus Mods website. A non-premium account
   cannot obtain a download link from the API without the website-minted key, so

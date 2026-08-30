@@ -24,7 +24,7 @@ const dashboard: Dashboard = {
   ue4ss: {
     installed: true,
     healthy: true,
-    luaMods: 1,
+    modCount: 1,
     logFound: true,
     protonOverride: true,
     message: null
