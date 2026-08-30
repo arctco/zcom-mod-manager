@@ -2,9 +2,9 @@
 name = "zcom-mod-manager"
 version = "0.1.5"
 description = "A dedicated mod manager for Star Wars: Zero Company"
-authors = ["ZCOM Mod Manager contributors"]
+authors = ["Victor Hugo (arctco)"]
 edition = "2021"
-license = "MIT"
+license = "GPL-3.0-only"
 repository = "https://github.com/arctco/zcom-mod-manager"
 
 [lib]

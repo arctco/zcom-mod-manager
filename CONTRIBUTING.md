@@ -71,7 +71,7 @@ the issue reproduces with all mods disabled.
 
 ## Licensing
 
-Contributions are accepted under MIT. Do not paste code from proprietary or
+Contributions are accepted under the GNU General Public License v3.0. Do not paste code from proprietary or
 license-unclear projects. Any adapted code must identify the upstream project,
 exact license, changed files, and required notice in the pull request and
 `THIRD_PARTY_NOTICES.md`.

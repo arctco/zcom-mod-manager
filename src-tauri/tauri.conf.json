@@ -30,7 +30,7 @@
     "category": "Utility",
     "shortDescription": "Safe mod management for Star Wars: Zero Company",
     "longDescription": "A dedicated open-source mod manager with Steam discovery, IoStore verification, UE4SS support, conflicts, and checksum-safe deployment.",
-    "copyright": "Copyright © 2026 ZCOM Mod Manager contributors",
+    "copyright": "Copyright © 2026 Victor Hugo (arctco)",
     "licenseFile": "../LICENSE",
     "externalBin": ["binaries/retoc"],
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],

@@ -407,7 +407,8 @@ No code was copied from Vortex or another mod manager.
 
 ## License
 
-ZCOM Mod Manager is available under the [MIT License](LICENSE).
+ZCOM Mod Manager is available under the [GNU General Public License v3.0](LICENSE).
+Copyright © 2026 Victor Hugo (arctco).
 
 ## Disclaimer
 

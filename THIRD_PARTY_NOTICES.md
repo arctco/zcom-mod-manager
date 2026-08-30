@@ -1,6 +1,7 @@
 # Third-Party Notices
 
-ZCOM Mod Manager's application code and original icon are MIT-licensed. No
+ZCOM Mod Manager's application code and original icon are licensed under the GNU
+General Public License v3.0. No
 game files, game assets, UE4SS binaries, or source code from another mod
 manager are included.
 
