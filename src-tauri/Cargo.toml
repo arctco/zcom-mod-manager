@@ -1,11 +1,11 @@
 [package]
 name = "zcom-mod-manager"
-version = "0.1.4"
+version = "0.1.5"
 description = "A dedicated mod manager for Star Wars: Zero Company"
 authors = ["ZCOM Mod Manager contributors"]
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/zcom-modding/zcom-mod-manager"
+repository = "https://github.com/arctco/zcom-mod-manager"
 
 [lib]
 name = "zcom_mod_manager_lib"
@@ -39,4 +39,3 @@ reqwest = { version = "0.13.4", default-features = false, features = ["rustls", 
 
 [dev-dependencies]
 tempfile = "3"
-

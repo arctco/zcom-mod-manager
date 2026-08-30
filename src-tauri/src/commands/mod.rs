@@ -194,7 +194,7 @@ pub fn get_links() -> Links {
     Links {
         ue4ss_download: ue4ss::DOWNLOAD_URL.into(),
         nexus_game: "https://www.nexusmods.com/games/starwarszerocompany/mods".into(),
-        project: "https://github.com/zcom-modding/zcom-mod-manager".into(),
+        project: "https://github.com/arctco/zcom-mod-manager".into(),
     }
 }
 
@@ -204,6 +204,75 @@ pub struct Links {
     pub ue4ss_download: String,
     pub nexus_game: String,
     pub project: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInfo {
+    pub current_version: String,
+    pub latest_version: String,
+    pub release_url: String,
+    pub update_available: bool,
+}
+
+fn version_parts(version: &str) -> Option<Vec<u64>> {
+    version
+        .trim_start_matches(['v', 'V'])
+        .split('.')
+        .map(|part| {
+            part.split_once('-')
+                .map_or(part, |(number, _)| number)
+                .parse()
+                .ok()
+        })
+        .collect()
+}
+
+fn version_is_newer(latest: &str, current: &str) -> bool {
+    let (Some(mut latest), Some(mut current)) = (version_parts(latest), version_parts(current))
+    else {
+        return latest.trim_start_matches(['v', 'V']) != current.trim_start_matches(['v', 'V']);
+    };
+    let width = latest.len().max(current.len());
+    latest.resize(width, 0);
+    current.resize(width, 0);
+    latest > current
+}
+
+/// Queries the latest published GitHub release only when the user requests it
+/// from About. No background network request is made at application startup.
+#[tauri::command]
+pub async fn check_for_updates() -> Result<UpdateInfo> {
+    const RELEASE_API: &str =
+        "https://api.github.com/repos/arctco/zcom-mod-manager/releases/latest";
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+    let response = reqwest::Client::builder()
+        .user_agent(format!("zcom-mod-manager/{current_version}"))
+        .build()
+        .map_err(|error| AppError::Network(error.to_string()))?
+        .get(RELEASE_API)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|error| AppError::Network(error.to_string()))?;
+    let release: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|error| AppError::Network(error.to_string()))?;
+    let tag = release["tag_name"]
+        .as_str()
+        .ok_or_else(|| AppError::Other("GitHub returned a release without a version.".into()))?;
+    let release_url = release["html_url"]
+        .as_str()
+        .ok_or_else(|| AppError::Other("GitHub returned a release without a link.".into()))?;
+    let latest_version = tag.trim_start_matches(['v', 'V']).to_string();
+    Ok(UpdateInfo {
+        update_available: version_is_newer(&latest_version, &current_version),
+        current_version,
+        latest_version,
+        release_url: release_url.to_string(),
+    })
 }
 #[tauri::command]
 pub fn run_diagnostics(ctx: State<'_, AppContext>) -> Result<DiagnosticReport> {
@@ -494,4 +563,17 @@ pub async fn nexus_download(url: String, app: tauri::AppHandle) -> Result<String
         &format!("mod_id={} file_id={}", link.mod_id, link.file_id),
     );
     Ok(destination.display().to_string())
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::version_is_newer;
+
+    #[test]
+    fn compares_release_versions_numerically() {
+        assert!(version_is_newer("v0.2.0", "0.1.4"));
+        assert!(version_is_newer("0.1.10", "0.1.9"));
+        assert!(!version_is_newer("v0.1.4", "0.1.4"));
+        assert!(!version_is_newer("0.1.3", "0.1.4"));
+    }
 }

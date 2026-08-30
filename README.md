@@ -316,7 +316,7 @@ Requirements:
 - `7z` for 7z archive installation/tests
 
 ```bash
-git clone https://github.com/zcom-modding/zcom-mod-manager.git
+git clone https://github.com/arctco/zcom-mod-manager.git
 cd zcom-mod-manager/zcom-mod-manager
 npm ci
 npm run prepare:retoc

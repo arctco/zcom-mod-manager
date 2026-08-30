@@ -10,6 +10,7 @@ import { HomePage } from "./pages/HomePage";
 import { InstallPage } from "./pages/InstallPage";
 import { ModsPage } from "./pages/ModsPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { AboutPage } from "./pages/AboutPage";
 import { backend, friendlyError } from "./services/backend";
 import type { AppSettings, Dashboard, DiagnosticReport, DownloadProgress, Links, ModPreview, ModSummary, NexusAccount, NexusStatus } from "./types";
 
@@ -134,6 +135,7 @@ export default function App() {
     {page === "install" && <InstallPage preview={preview} loading={loading} download={download} advanced={advanced} onAdvanced={() => setAdvanced(!advanced)} onChooseFile={() => void choose({ filters: [{ name: "Supported mods", extensions: ["zip", "7z", "pak", "utoc", "ucas"] }] })} onChooseFolder={() => void choose({ directory: true })} onInstall={() => void install()} onCancel={() => setPreview(null)} />}
     {page === "diagnostics" && <DiagnosticsPage report={diagnostics} loading={loading} onRun={() => void runDiagnostics()} onCopy={() => void navigator.clipboard.writeText(diagnostics?.text ?? "").then(() => notify("Diagnostic report copied."))} />}
     {page === "settings" && <SettingsPage settings={settings} retoc={dashboard.retoc} onChange={setSettings} onSave={() => void saveSettings()} onPickGame={() => void locateGame()} onPickRetoc={async () => { const picked = await open({ multiple: false, title: "Select retoc executable" }); if (typeof picked === "string") setSettings({ ...settings, retocPath: picked }); }} onOpenLogs={() => void backend.managedPath("logs").then(openPath)} onOpenData={() => void backend.managedPath("data").then(openPath)} links={links} onOpenLink={openExternal} nexus={nexus} nexusAccount={nexusAccount} onSaveNexusKey={saveNexusKey} onClearNexusKey={clearNexusKey} onToggleNxmHandler={toggleNxmHandler} />}
+    {page === "about" && <AboutPage projectUrl={links.project} onOpenLink={openExternal} />}
     {toast && <div className={`toast ${toast.kind}`} role="status">{toast.text}</div>}
   </Shell>;
 }

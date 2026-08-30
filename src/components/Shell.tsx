@@ -1,10 +1,11 @@
-import { Activity, Download, Home, Package, Settings } from "lucide-react";
+import { Activity, CircleHelp, Download, Home, Package, Settings } from "lucide-react";
 import brandMark from "../assets/icon.svg";
 
-export type Page = "home" | "mods" | "install" | "diagnostics" | "settings";
+export type Page = "home" | "mods" | "install" | "diagnostics" | "settings" | "about";
 const nav: Array<[Page, string, typeof Home]> = [
   ["home", "Home", Home], ["mods", "Mods", Package], ["install", "Install", Download],
-  ["diagnostics", "Diagnostics", Activity], ["settings", "Settings", Settings]
+  ["diagnostics", "Diagnostics", Activity], ["settings", "Settings", Settings],
+  ["about", "About", CircleHelp]
 ];
 
 export function Shell({ page, onPage, gameReady, children }: { page: Page; onPage: (page: Page) => void; gameReady: boolean; children: React.ReactNode }) {

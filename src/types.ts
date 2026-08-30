@@ -53,6 +53,13 @@ export interface Links {
   project: string;
 }
 
+export interface UpdateInfo {
+  currentVersion: string;
+  latestVersion: string;
+  releaseUrl: string;
+  updateAvailable: boolean;
+}
+
 export interface Dashboard {
   game: GameInfo;
   installedMods: number;

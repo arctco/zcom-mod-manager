@@ -114,6 +114,7 @@ pub fn run() {
             commands::verify_mod,
             commands::install_ue4ss,
             commands::get_links,
+            commands::check_for_updates,
             commands::nexus_status,
             commands::set_nexus_key,
             commands::clear_nexus_key,

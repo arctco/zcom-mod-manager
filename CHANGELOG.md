@@ -2,6 +2,17 @@
 
 All notable changes are documented here.
 
+## 0.1.5
+
+- Restored the original 0.1.0 blue, steel, and gold interface palette while
+  preserving the newer application layout and features.
+- Added an About page with the installed version, project information, license,
+  source links, and release links.
+- Added an on-demand GitHub update check that compares the installed version
+  with the latest published release and links directly to available updates.
+- Corrected repository, release API, documentation, and external-link targets
+  to `arctco/zcom-mod-manager`.
+
 ## 0.1.4
 
 - Added a portable Windows zip to the release artifacts. Extract it anywhere and
