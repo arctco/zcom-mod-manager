@@ -407,8 +407,14 @@ No code was copied from Vortex or another mod manager.
 
 ## License
 
-ZCOM Mod Manager is available under the [GNU General Public License v3.0](LICENSE).
+ZCOM Mod Manager is licensed under the
+[GNU General Public License version 3 only (`GPL-3.0-only`)](LICENSE).
 Copyright © 2026 Victor Hugo (arctco).
+
+The license permits forks and redistribution, but it does not grant permission
+to present a modified build as an official ZCOM Mod Manager release. See the
+[trademark and branding policy](TRADEMARKS.md) for use of the project name and
+logo.
 
 ## Disclaimer
 

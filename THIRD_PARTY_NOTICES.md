@@ -1,9 +1,10 @@
 # Third-Party Notices
 
-ZCOM Mod Manager's application code and original icon are licensed under the GNU
-General Public License v3.0. No
-game files, game assets, UE4SS binaries, or source code from another mod
-manager are included.
+ZCOM Mod Manager's application code and original icon are licensed under the
+GNU General Public License version 3 only (`GPL-3.0-only`). The copyright
+license does not grant trademark rights in the project name or logo; see
+`TRADEMARKS.md`. No game files, game assets, UE4SS binaries, or source code from
+another mod manager are included.
 
 ## retoc
 

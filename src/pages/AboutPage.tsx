@@ -33,7 +33,7 @@ export function AboutPage({ projectUrl, onOpenLink }: { projectUrl: string; onOp
           {error && <b className="status-error">Couldn’t check GitHub: {error}</b>}
         </div>
       </article>
-      <article className="panel about-project"><h2>Community project</h2><p>ZCOM Mod Manager is an independent community project and is not affiliated with or endorsed by Lucasfilm Games, Electronic Arts, Bit Reactor, or Respawn Entertainment.</p><div className="settings-actions"><button onClick={() => onOpenLink(projectUrl)}><Github aria-hidden size={17} />View source on GitHub</button><button onClick={() => onOpenLink(`${projectUrl}/releases`)}><ExternalLink aria-hidden size={17} />All releases</button></div><small>Licensed under the GNU GPLv3 · © 2026 Victor Hugo (arctco)</small></article>
+      <article className="panel about-project"><h2>Community project</h2><p>ZCOM Mod Manager is an independent community project and is not affiliated with or endorsed by Lucasfilm Games, Electronic Arts, Bit Reactor, or Respawn Entertainment.</p><div className="settings-actions"><button onClick={() => onOpenLink(projectUrl)}><Github aria-hidden size={17} />View source on GitHub</button><button onClick={() => onOpenLink(`${projectUrl}/releases`)}><ExternalLink aria-hidden size={17} />All releases</button></div><small>Licensed under GNU GPLv3-only · © 2026 Victor Hugo (arctco)</small></article>
     </section>
   </div>;
 }
