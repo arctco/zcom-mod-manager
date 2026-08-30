@@ -59,6 +59,25 @@ fn copy_atomic(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Moves a file, falling back to copy-and-remove across filesystems.
+///
+/// The managed library lives in the application data directory while the game
+/// commonly sits on another drive entirely - a second SSD on Windows, or a
+/// separate Steam library on Linux. `rename` cannot cross that boundary and
+/// fails without moving anything, so an upgrade of a mod installed on another
+/// drive would abort before it started.
+fn move_file(from: &Path, to: &Path) -> Result<()> {
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    fs::copy(from, to)?;
+    fs::remove_file(from)?;
+    Ok(())
+}
+
 fn backup_root(library: &Path, id: &str) -> PathBuf {
     library.join(id).join("replaced")
 }
@@ -308,7 +327,7 @@ pub fn replace(
     let restore = |moved: &[(PathBuf, PathBuf)]| {
         for (original, held) in moved.iter().rev() {
             if held.is_file() && !original.exists() {
-                let _ = fs::rename(held, original);
+                let _ = move_file(held, original);
             }
         }
     };
@@ -318,10 +337,10 @@ pub fn replace(
             continue;
         }
         let held = aside.join(index.to_string());
-        if let Err(error) = fs::rename(&original, &held) {
+        if let Err(error) = move_file(&original, &held) {
             restore(&moved);
             let _ = fs::remove_dir_all(&aside);
-            return Err(error.into());
+            return Err(error);
         }
         moved.push((original, held));
     }
@@ -785,6 +804,19 @@ mod tests {
     fn ue4ss_game(root: &Path) {
         game(root);
         fs::create_dir_all(root.join("SWZeroCompany/Binaries/Win64/ue4ss/Mods")).unwrap();
+    }
+
+    #[test]
+    fn moving_a_file_creates_its_destination_and_clears_the_source() {
+        let d = tempdir().unwrap();
+        let from = d.path().join("original.pak");
+        fs::write(&from, b"payload").unwrap();
+        let to = d.path().join("held/deep/0");
+
+        move_file(&from, &to).unwrap();
+
+        assert_eq!(fs::read(&to).unwrap(), b"payload");
+        assert!(!from.exists(), "the source is gone either way it moved");
     }
 
     #[test]

@@ -397,7 +397,11 @@ mod tests {
         assert!(staged.root.join("SomeMod/Nested_P.pak").is_file());
     }
 
+    /// Only reachable where `\` is an ordinary filename character. Windows
+    /// cannot hold such a name in the first place, so the repair is a no-op
+    /// there and the scenario cannot be built.
     #[test]
+    #[cfg(unix)]
     fn repairs_names_an_external_extractor_left_flat() {
         let d = tempdir().unwrap();
         let root = d.path().join("staged");

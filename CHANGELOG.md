@@ -53,6 +53,12 @@ All notable changes are documented here.
   sandboxes are cleared at startup.
 - Library row actions are laid out as two rows of three; six buttons never fit
   the single row they were given.
+- An upgrade of a mod installed on a different drive from the managed library
+  no longer fails before it starts. Moving the previous version's files aside
+  used a rename, which cannot cross a filesystem boundary, and the game is
+  regularly on a second drive.
+- Payload paths shown in the install preview use one separator on every
+  platform instead of mixing both on Windows.
 
 ## 0.2.0
 

@@ -639,7 +639,14 @@ fn collect(
             files: bucket
                 .files
                 .iter()
-                .map(|p| p.destination_relative.display().to_string())
+                // Displayed, never parsed. One spelling on every platform keeps
+                // a Windows path from reading as a mix of both separators.
+                .map(|p| {
+                    p.destination_relative
+                        .display()
+                        .to_string()
+                        .replace('\\', "/")
+                })
                 .collect(),
             warnings: bucket_warnings,
             valid,
@@ -918,7 +925,12 @@ mod tests {
         let destinations: BTreeSet<String> = staged
             .files
             .iter()
-            .map(|file| file.destination_relative.display().to_string())
+            .map(|file| {
+                file.destination_relative
+                    .display()
+                    .to_string()
+                    .replace('\\', "/")
+            })
             .collect();
         assert!(destinations.contains("SWZeroCompany/Binaries/Win64/dxgi.dll"));
         assert!(
