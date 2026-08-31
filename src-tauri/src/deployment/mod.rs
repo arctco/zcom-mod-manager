@@ -415,6 +415,16 @@ pub fn set_enabled(
         for (lib, destination, _, _) in &records {
             let source = library.join(id).join("payload").join(lib);
             let target = PathBuf::from(destination);
+            // An externally installed UE4SS mod may be disabled only through
+            // mods.txt while its payload remains deployed. Adoption records
+            // that disabled state without touching the game folder; enabling
+            // it later can safely reuse an identical live copy.
+            if record.mod_type != "gamedir"
+                && target.is_file()
+                && sha256(&target)? == sha256(&source)?
+            {
+                continue;
+            }
             // A game-folder mod replaces what the game shipped. Whatever sits
             // at the destination now is either the original this mod put back
             // when it was disabled, or a newer file a game update wrote. The
@@ -474,19 +484,24 @@ pub fn uninstall(
 ) -> Result<()> {
     let record = database::mod_record(conn, id)?;
     let records = database::file_records(conn, id)?;
+    // A mod adopted while disabled in mods.txt can still have its payload on
+    // disk. Remove an exact managed copy regardless of the enabled flag, but
+    // keep anything else (such as a restored original game file) when the mod
+    // is disabled.
+    for (_, destination, _, expected) in &records {
+        let path = PathBuf::from(destination);
+        if !path.exists() {
+            continue;
+        }
+        let matches = sha256(&path)? == *expected;
+        if record.enabled && !matches && !force {
+            return Err(AppError::ChecksumMismatch(path));
+        }
+        if matches || (record.enabled && force) {
+            fs::remove_file(path)?
+        }
+    }
     if record.enabled {
-        for (_, destination, _, expected) in &records {
-            let path = PathBuf::from(destination);
-            if path.exists() && !force && sha256(&path)? != *expected {
-                return Err(AppError::ChecksumMismatch(path));
-            }
-        }
-        for (_, destination, _, _) in &records {
-            let path = PathBuf::from(destination);
-            if path.exists() {
-                fs::remove_file(path)?
-            }
-        }
         restore_backups(conn, library, id)?;
     }
     if let Some(game) = game {

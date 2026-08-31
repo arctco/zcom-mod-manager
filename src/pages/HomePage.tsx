@@ -16,16 +16,21 @@ interface Props {
   onInstallUe4ss: () => void;
   busy: boolean;
   launching: boolean;
+  canLaunch?: boolean;
+  existingModsFound?: number;
+  onReviewExisting?: () => void;
+  onDismissExisting?: () => void;
 }
 
-export function HomePage({ data, onInstall, onDiagnose, onLocate, onOpenMods, onOpenGame, onLaunchGame, onGetUe4ss, onInstallUe4ss, busy, launching }: Props) {
+export function HomePage({ data, onInstall, onDiagnose, onLocate, onOpenMods, onOpenGame, onLaunchGame, onGetUe4ss, onInstallUe4ss, busy, launching, canLaunch = data.game.detected, existingModsFound, onReviewExisting, onDismissExisting }: Props) {
   const { game, ue4ss } = data;
   return <div className="page">
     <header className="hero">
       <div><p className="eyebrow">TACTICAL MOD CONTROL</p><h1>Star Wars: Zero Company</h1><p className="muted">A safe, purpose-built manager for packaged and UE4SS mods.</p></div>
-      <div className="hero-actions"><StatusBadge status={game.detected ? "good" : "error"}>{game.detected ? "Game detected" : "Game not detected"}</StatusBadge><button className="primary" onClick={onLaunchGame} disabled={!game.detected || launching}><Play aria-hidden size={17} />{launching ? "Opening Steam…" : "Launch game"}</button></div>
+      <div className="hero-actions"><StatusBadge status={game.detected ? "good" : "error"}>{game.detected ? "Game detected" : "Game not detected"}</StatusBadge><button className="primary" onClick={onLaunchGame} disabled={!canLaunch || launching}><Play aria-hidden size={17} />{launching ? "Launching…" : "Launch game"}</button></div>
     </header>
     {!game.detected && <section className="callout warning"><div><h2>Locate your game installation</h2><p>Automatic Steam discovery did not find a valid Zero Company installation.</p></div><button className="primary" onClick={onLocate}>Locate game</button></section>}
+    {!!existingModsFound && <section className="callout warning existing-mod-callout"><div><h2>Existing mods found</h2><p>ZCOM found {existingModsFound} unmanaged mod{existingModsFound === 1 ? "" : "s"} that can be reviewed for migration.</p></div><button onClick={onDismissExisting}>Not now</button><button className="primary" onClick={onReviewExisting}>Review existing mods</button></section>}
     {data.previousBuildId && game.steamBuildId && data.previousBuildId !== game.steamBuildId && <section className="callout warning"><div><h2>Zero Company updated</h2><p>Build {data.previousBuildId} → {game.steamBuildId}. Review installed mods before playing.</p></div><button onClick={onDiagnose}>Review</button></section>}
     <section className="stats" aria-label="Game and mod status">
       <article><span>Steam build</span><strong>{game.steamBuildId ?? "—"}</strong><small>{game.source === "manual" ? "Manual location" : "Steam manifest"}</small></article>

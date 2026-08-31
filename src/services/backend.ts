@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppSettings, Dashboard, DiagnosticReport, Links, LoadOrderPreview, LoadOrderState, ModPreview, ModSummary, NexusAccount, NexusStatus, Ue4ssInstallReport, UpdateInfo } from "../types";
+import type { AdoptionGroup, AdoptionReport, AppSettings, Dashboard, DiagnosticReport, ExistingModScan, LaunchReport, Links, LoadOrderPreview, LoadOrderState, ModPreview, ModSummary, NexusAccount, NexusStatus, Ue4ssInstallReport, UpdateInfo } from "../types";
 
 export const backend = {
   dashboard: () => invoke<Dashboard>("get_dashboard"),
@@ -9,6 +9,9 @@ export const backend = {
   applyLoadOrder: (orderedModIds: string[]) => invoke<LoadOrderState>("apply_load_order", { orderedModIds }),
   applyUe4ssOrder: (orderedModIds: string[]) => invoke<LoadOrderState>("apply_ue4ss_order", { orderedModIds }),
   inspect: (path: string) => invoke<ModPreview[]>("inspect_mod", { path }),
+  discoverExistingMods: () => invoke<ExistingModScan>("discover_existing_mods"),
+  adoptExistingMods: (scanId: string, groups: AdoptionGroup[]) => invoke<AdoptionReport>("adopt_existing_mods", { scanId, groups }),
+  acknowledgeExistingModPrompt: () => invoke<void>("acknowledge_existing_mod_prompt"),
   install: (stagingId: string, name?: string, replace?: string) => invoke<ModSummary>("install_mod", { stagingId, name: name ?? null, replace: replace ?? null }),
   discardPreviews: (stagingIds: string[]) => invoke<void>("discard_previews", { stagingIds }),
   rename: (id: string, name: string) => invoke<void>("rename_mod", { id, name }),
@@ -30,7 +33,7 @@ export const backend = {
   setGamePath: (path: string) => invoke<GameInfo>("set_game_path", { path }),
   copyDiagnostics: () => invoke<string>("diagnostic_report"),
   openManagedPath: (kind: "game" | "mods" | "logs" | "data" | `mod:${string}` | `installed:${string}`) => invoke<void>("open_managed_path", { kind }),
-  launchGame: () => invoke<void>("launch_game")
+  launchGame: () => invoke<LaunchReport>("launch_game")
 };
 
 interface GameInfo {

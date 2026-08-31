@@ -1,3 +1,4 @@
+mod adoption;
 mod archives;
 mod commands;
 mod credentials;
@@ -26,6 +27,7 @@ pub struct AppContext {
     logs_dir: PathBuf,
     db_path: PathBuf,
     previews: Mutex<HashMap<String, models::StagedMod>>,
+    discoveries: Mutex<HashMap<String, adoption::ScanSnapshot>>,
     previous_build_id: Option<String>,
     /// An `nxm://` link that launched this process. Emitting it during setup
     /// would be lost, because the interface has not subscribed yet, so it is
@@ -76,6 +78,8 @@ pub fn run() {
                 .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
             load_order::recover(&conn, &data_dir.join("load-order-operation.json"))
                 .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
+            adoption::recover(&conn, &data_dir)
+                .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
             let settings = database::settings(&conn)
                 .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
             let detected = if let Some(path) = settings.game_path.filter(|p| !p.is_empty()) {
@@ -105,6 +109,7 @@ pub fn run() {
                 logs_dir,
                 db_path,
                 previews: Mutex::new(HashMap::new()),
+                discoveries: Mutex::new(HashMap::new()),
                 previous_build_id,
                 pending_nxm: Mutex::new(std::env::args().find(|arg| arg.starts_with("nxm://"))),
             });
@@ -118,6 +123,9 @@ pub fn run() {
             commands::apply_load_order,
             commands::apply_ue4ss_order,
             commands::inspect_mod,
+            commands::discover_existing_mods,
+            commands::adopt_existing_mods,
+            commands::acknowledge_existing_mod_prompt,
             commands::install_mod,
             commands::discard_previews,
             commands::rename_mod,

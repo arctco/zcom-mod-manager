@@ -18,12 +18,15 @@ records SHA-256 ownership, and treats Linux/Proton as a first-class platform.
 ## Features
 
 - Steam AppID `2075800` discovery across default and additional libraries
-- Steam-aware game launch from the Home page
+- Steam-aware game launch from the Home page, with an optional custom executable
 - Dynamic Steam build-ID detection and update warnings
 - ZIP, 7z, direct PAK/UTOC/UCAS, folder, picker, and drag-and-drop input
 - Nested archive payload discovery without copying documentation or random data
+- Separate, labeled choices for packaged variants bundled in sibling folders
 - IoStore pair/triplet validation and retoc 0.1.5 verification
-- PAK-only and UE4SS `Scripts/main.lua` mod support
+- PAK-only and UE4SS Lua/DLL mod support
+- Existing-mod discovery and non-destructive adoption for packaged, UE4SS, and
+  additive `LogicMods` installations
 - Manager-owned source library plus checksum-guarded deployment records
 - Enable, disable, verify, and safe uninstall operations
 - Filename and hashed IoStore package conflict detection
@@ -31,6 +34,7 @@ records SHA-256 ownership, and treats Linux/Proton as a first-class platform.
 - Optional spoiler-sensitive package paths, disabled by default
 - UE4SS layout checks and formatting-preserving `mods.txt` updates
 - Guided UE4SS runtime installation from a package you downloaded yourself
+- Opt-in Nexus Mods `nxm://` download handoff with protected API-key storage
 - Linux compatdata and Proton DLL-override diagnostics
 - Sanitized structured logs and a copyable Mod Doctor report
 - Automatic GitHub release notices with a manual retry on the About page
@@ -54,7 +58,7 @@ project's own Z mark, drawn as plain SVG in `src-tauri/icons/app-icon.svg`.
 
 Steam Deck/SteamOS should work through the x86_64 Linux AppImage. Add it as a
 non-Steam application if desired. See [Known Limitations](KNOWN_LIMITATIONS.md)
-for the boundaries of v0.1.0.
+for the boundaries of v0.4.0.
 
 ## Supported Mod Types
 
@@ -70,6 +74,11 @@ Example_P.ucas
 
 UTOC and UCAS must share a basename and both must be present. A companion PAK
 is installed when supplied. retoc must verify every UTOC before installation.
+
+When an archive contains packaged alternatives in separate folders, the install
+review presents each folder as a labeled option instead of combining every
+variant. Choose only the version or component you want; selected alternatives
+remain separate library entries.
 
 ### PAK-only mods
 
@@ -123,6 +132,22 @@ removed, so `ZCUnlocked 34 1.3 2026-08-30T07-32Z i9WZfkaQ7.zip` installs as
 "ZC Unlocked" at version 1.3. Names are editable before installing and can be
 changed later from the library; renaming never touches deployed file names.
 
+### Migrating existing mods
+
+When ZCOM first connects to a game installation, it checks the controlled mod
+folders for packages installed by hand or by another manager. The same scan is
+always available from **Mods → Discover existing mods**.
+
+PAK/IoStore container families, UE4SS mod folders, and additive `LogicMods` can
+be adopted. Review the candidates, optionally merge container families that
+belong to one download, edit their names, and select what ZCOM should manage.
+Adoption copies each payload into the managed library and records checksums;
+the live files, filenames, load order, and `mods.txt` are not changed.
+
+Known UE4SS runtime components are shown but unchecked. Replacement-style
+game-folder mods such as ReShade are reported but cannot be adopted safely,
+because ZCOM did not see and back up the original file they replaced.
+
 ## Installation
 
 Download the package for your platform from the GitHub release:
@@ -133,7 +158,7 @@ Download the package for your platform from the GitHub release:
   cannot verify or repack IoStore containers without the sidecar. The portable
   build also assumes the Microsoft Edge WebView2 runtime is already present,
   which it is on Windows 11 and on Windows 10 machines with current Edge; the
-  installer downloads it when missing. v0.1.0 community builds are unsigned, so
+  installer downloads it when missing. Community builds are unsigned, so
   Windows SmartScreen may show a warning. Verify the release checksum and
   repository before choosing **Run anyway**.
 
@@ -147,6 +172,10 @@ system `7z` command: install `p7zip`/`7zip` if it is not already available.
 3. Open **Install** and drop a downloaded mod archive onto the window.
 4. Review detected files, verification, compatibility, and conflicts.
 5. Choose **Install**.
+
+By default, **Launch game** uses Steam. To use a different executable or
+launcher, select it under **Settings → Game installation**, save the setting,
+and launch from Home. **Use Steam** clears the override.
 
 The manager makes one lightweight request to the project’s latest GitHub
 release endpoint when it opens. If a newer manager release exists, an update
@@ -293,7 +322,7 @@ folders are scanned. The selected directory must contain both
 `SWZeroCompany/Binaries/Win64/SWZeroCompany.exe` and
 `SWZeroCompany/Content/Paks/`.
 
-Unsigned v0.1.0 builds can trigger SmartScreen. Code signing can be added later
+Unsigned builds can trigger SmartScreen. Code signing can be added later
 through standard Tauri signing secrets without changing application behavior.
 
 ## Diagnostics
@@ -430,6 +459,7 @@ src/                         React/TypeScript UI
 src-tauri/src/steam/         Steam and game discovery
 src-tauri/src/archives/      sandboxed ZIP/7z staging
 src-tauri/src/mods/          payload and manifest recognition
+src-tauri/src/adoption.rs    existing-mod discovery and adoption
 src-tauri/src/deployment/    ownership-safe lifecycle
 src-tauri/src/retoc/         verifier abstraction
 src-tauri/src/ue4ss/         runtime and mods.txt handling
@@ -446,8 +476,8 @@ AppImage/deb and Windows NSIS installer/portable zip artifacts. The release is
 not a draft, so smoke-test both platforms before tagging.
 
 ```bash
-git tag -s v0.1.1 -m "ZCOM Mod Manager 0.1.1"
-git push origin v0.1.1
+git tag -s v0.4.0 -m "ZCOM Mod Manager 0.4.0"
+git push origin v0.4.0
 ```
 
 Confirm checksums after the run finishes. See
@@ -459,6 +489,8 @@ Confirm checksums after the run finishes. See
   manager release notices shipped; profiles and dependency metadata remain
 - **0.3:** Nexus handoff shipped; Nexus catalog browsing and per-mod update
   checking still remain
+- **0.4:** existing-mod migration, bundled packaged-variant selection, and a
+  custom game executable shipped
 - **Future / separate project:** ZCOM Mod Studio for asset inspection and authoring
 
 ## Contributing

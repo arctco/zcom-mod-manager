@@ -76,6 +76,8 @@ pub fn settings(conn: &Connection) -> Result<AppSettings> {
     let bool_value = |key: &str| get_setting(conn, key).map(|v| v.as_deref() == Some("true"));
     Ok(AppSettings {
         game_path: get_setting(conn, "game_path")?,
+        custom_executable_path: get_setting(conn, "custom_executable_path")?
+            .filter(|path| !path.trim().is_empty()),
         retoc_path: get_setting(conn, "retoc_path")?,
         log_level: get_setting(conn, "log_level")?.unwrap_or_else(|| "normal".into()),
         advanced_package_names: bool_value("advanced_package_names")?,
@@ -86,6 +88,10 @@ pub fn settings(conn: &Connection) -> Result<AppSettings> {
 pub fn save_settings(conn: &Connection, value: &AppSettings) -> Result<()> {
     let values = [
         ("game_path", value.game_path.clone().unwrap_or_default()),
+        (
+            "custom_executable_path",
+            value.custom_executable_path.clone().unwrap_or_default(),
+        ),
         ("retoc_path", value.retoc_path.clone().unwrap_or_default()),
         ("log_level", value.log_level.clone()),
         (
@@ -497,6 +503,23 @@ mod tests {
         )
         .unwrap();
         tx.commit().unwrap();
+    }
+
+    #[test]
+    fn custom_launch_executable_round_trips_through_settings() {
+        let d = tempdir().unwrap();
+        let conn = open(&d.path().join("db")).unwrap();
+        let expected = AppSettings {
+            custom_executable_path: Some("C:\\Games\\ZeroCompany.exe".into()),
+            ..AppSettings::default()
+        };
+
+        save_settings(&conn, &expected).unwrap();
+
+        assert_eq!(
+            settings(&conn).unwrap().custom_executable_path,
+            expected.custom_executable_path
+        );
     }
 
     #[test]

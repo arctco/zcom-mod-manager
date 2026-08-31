@@ -5,6 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import brandMark from "./assets/icon.svg";
 import { Shell, type Page } from "./components/Shell";
+import { AdoptionDialog } from "./components/AdoptionDialog";
 import { useSubscription } from "./hooks/useSubscription";
 import { DiagnosticsPage } from "./pages/DiagnosticsPage";
 import { HomePage } from "./pages/HomePage";
@@ -13,9 +14,9 @@ import { ModsPage } from "./pages/ModsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { AboutPage } from "./pages/AboutPage";
 import { backend, friendlyError } from "./services/backend";
-import type { AppSettings, Dashboard, DiagnosticReport, DownloadProgress, Links, LoadOrderPreview, LoadOrderState, ModPreview, ModSummary, NexusAccount, NexusStatus, UpdateInfo } from "./types";
+import type { AdoptionGroup, AdoptionReport, AppSettings, Dashboard, DiagnosticReport, DownloadProgress, ExistingModScan, Links, LoadOrderPreview, LoadOrderState, ModPreview, ModSummary, NexusAccount, NexusStatus, UpdateInfo } from "./types";
 
-const defaultSettings: AppSettings = { gamePath: null, retocPath: null, logLevel: "normal", advancedPackageNames: false, reducedMotion: false };
+const defaultSettings: AppSettings = { gamePath: null, customExecutablePath: null, retocPath: null, logLevel: "normal", advancedPackageNames: false, reducedMotion: false };
 const defaultLinks: Links = { ue4ssDownload: "", nexusGame: "", project: "" };
 const defaultLoadOrder: LoadOrderState = { entries: [], ue4ssEntries: [], activeConflicts: [], potentialConflicts: [], unapplied: false };
 
@@ -44,8 +45,15 @@ export default function App() {
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [advanced, setAdvanced] = useState(false);
+  const [existingScan, setExistingScan] = useState<ExistingModScan | null>(null);
+  const [existingPrompt, setExistingPrompt] = useState(false);
+  const [existingReview, setExistingReview] = useState(false);
+  const [discoveringExisting, setDiscoveringExisting] = useState(false);
+  const [adoptingExisting, setAdoptingExisting] = useState(false);
   const [toast, setToast] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const updateCheckStarted = useRef(false);
+  const automaticDiscoveryStarted = useRef(false);
+  const existingDiscoveryAttempt = useRef(0);
   // Held in a ref as well as in state so an inspection that finishes while
   // another is starting can still find, and release, what it replaced.
   const previewsRef = useRef<ModPreview[]>([]);
@@ -61,6 +69,11 @@ export default function App() {
   }, []);
 
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    if (!dashboard?.game.detected || !dashboard.existingModScanPending || automaticDiscoveryStarted.current) return;
+    automaticDiscoveryStarted.current = true;
+    void discoverExisting(false);
+  }, [dashboard?.game.detected, dashboard?.existingModScanPending]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (updateCheckStarted.current) return;
     updateCheckStarted.current = true;
@@ -108,6 +121,47 @@ export default function App() {
     await release(staged);
   }
   async function choose(options: { directory?: boolean; filters?: { name: string; extensions: string[] }[] } = {}) { const picked = await open({ multiple: false, ...options }); if (typeof picked === "string") await inspect(picked); }
+  async function discoverExisting(interactive: boolean) {
+    const attempt = ++existingDiscoveryAttempt.current;
+    setDiscoveringExisting(true);
+    try {
+      const scan = await backend.discoverExistingMods();
+      if (attempt !== existingDiscoveryAttempt.current) return;
+      setExistingScan(scan);
+      if (dashboard?.existingModScanPending) await backend.acknowledgeExistingModPrompt();
+      if (!interactive) {
+        setExistingPrompt(scan.candidates.length > 0 || scan.unsupported.length > 0);
+      } else if (scan.candidates.length > 0 || scan.unsupported.length > 0) {
+        setExistingReview(true);
+      } else {
+        notify("No unmanaged supported mods were found.");
+      }
+    } catch (e) {
+      if (attempt === existingDiscoveryAttempt.current) notify(friendlyError(e), "error");
+    } finally {
+      if (attempt === existingDiscoveryAttempt.current) setDiscoveringExisting(false);
+    }
+  }
+  async function adoptExisting(groups: AdoptionGroup[]): Promise<AdoptionReport> {
+    if (!existingScan) return { outcomes: [] };
+    setAdoptingExisting(true);
+    try {
+      const report = await backend.adoptExistingMods(existingScan.scanId, groups);
+      const succeeded = report.outcomes.filter(outcome => outcome.modSummary);
+      const succeededIds = new Set(succeeded.flatMap(outcome => outcome.candidateIds));
+      setExistingScan(current => current ? { ...current, candidates: current.candidates.filter(candidate => !succeededIds.has(candidate.id)) } : null);
+      await refresh();
+      if (succeeded.length) notify(`${succeeded.length} existing mod${succeeded.length === 1 ? "" : "s"} adopted safely.`);
+      const failures = report.outcomes.length - succeeded.length;
+      if (failures) notify(`${failures} mod${failures === 1 ? "" : "s"} could not be adopted. Review the details and retry.`, "error");
+      return report;
+    } catch (e) {
+      notify(friendlyError(e), "error");
+      return { outcomes: groups.map(group => ({ candidateIds: group.candidateIds, name: group.name, modSummary: null, error: friendlyError(e) })) };
+    } finally {
+      setAdoptingExisting(false);
+    }
+  }
   async function locateGame() { const picked = await open({ directory: true, multiple: false, title: "Locate Star Wars Zero Company" }); if (typeof picked === "string") { try { await backend.setGamePath(picked); await refresh(); notify("Game installation connected."); } catch (e) { notify(friendlyError(e), "error"); } } }
   async function install(preview: ModPreview) {
     setInstalling(preview.stagingId);
@@ -202,7 +256,10 @@ export default function App() {
   }
   async function launchGame() {
     setLaunching(true);
-    try { await backend.launchGame(); notify("Opening Zero Company in Steam."); }
+    try {
+      const result = await backend.launchGame();
+      notify(result.method === "custom-executable" ? "Launching the custom game executable." : "Opening Zero Company in Steam.");
+    }
     catch (e) { notify(friendlyError(e), "error"); }
     finally { setLaunching(false); }
   }
@@ -221,12 +278,14 @@ export default function App() {
 
   if (!dashboard) return <div className="splash"><img className="brand-mark" src={brandMark} alt="" width={96} height={96} /><p>Preparing your mod library…</p></div>;
   return <Shell page={page} onPage={setPage} gameReady={dashboard.game.detected} updateAvailable={update?.updateAvailable === true}>
-    {page === "home" && <HomePage data={dashboard} onInstall={() => setPage("install")} onDiagnose={() => setPage("diagnostics")} onLocate={locateGame} onOpenMods={() => void openFolder("mods")} onOpenGame={() => void openFolder("game")} onLaunchGame={() => void launchGame()} onGetUe4ss={() => openExternal(links.ue4ssDownload)} onInstallUe4ss={() => void installUe4ss()} busy={loading} launching={launching} />}
-    {page === "mods" && <ModsPage mods={mods} loadOrder={loadOrder} orderPreview={orderPreview} orderBusy={orderBusy} onPreviewOrder={ids => void previewOrder(ids)} onApplyOrder={ids => void applyOrder(ids)} onApplyUe4ssOrder={ids => void applyUe4ssOrder(ids)} onCancelOrder={() => setOrderPreview(null)} onBrowseNexus={() => openExternal(links.nexusGame)} busy={busyMod} onInstall={() => setPage("install")} onToggle={toggle} onUninstall={uninstall} onVerify={verify} onRename={rename} onOpenInstalled={mod => void openFolder(`installed:${mod.id}`)} onOpenSource={mod => void openFolder(`mod:${mod.id}`)} />}
+    {page === "home" && <HomePage data={dashboard} onInstall={() => setPage("install")} onDiagnose={() => setPage("diagnostics")} onLocate={locateGame} onOpenMods={() => void openFolder("mods")} onOpenGame={() => void openFolder("game")} onLaunchGame={() => void launchGame()} onGetUe4ss={() => openExternal(links.ue4ssDownload)} onInstallUe4ss={() => void installUe4ss()} busy={loading} launching={launching} canLaunch={dashboard.game.detected || !!settings.customExecutablePath} existingModsFound={existingPrompt ? (existingScan?.candidates.length ?? 0) + (existingScan?.unsupported.length ?? 0) : 0} onDismissExisting={() => setExistingPrompt(false)} onReviewExisting={() => { setExistingPrompt(false); setPage("mods"); setExistingReview(true); }} />}
+    {page === "mods" && <ModsPage mods={mods} loadOrder={loadOrder} orderPreview={orderPreview} orderBusy={orderBusy} onPreviewOrder={ids => void previewOrder(ids)} onApplyOrder={ids => void applyOrder(ids)} onApplyUe4ssOrder={ids => void applyUe4ssOrder(ids)} onCancelOrder={() => setOrderPreview(null)} onBrowseNexus={() => openExternal(links.nexusGame)} busy={busyMod} onInstall={() => setPage("install")} onDiscover={() => void discoverExisting(true)} discovering={discoveringExisting} onToggle={toggle} onUninstall={uninstall} onVerify={verify} onRename={rename} onOpenInstalled={mod => void openFolder(`installed:${mod.id}`)} onOpenSource={mod => void openFolder(`mod:${mod.id}`)} />}
     {page === "install" && <InstallPage previews={previews} names={names} loading={loading} download={download} advanced={advanced} installing={installing} onAdvanced={() => setAdvanced(!advanced)} onName={(stagingId, name) => setNames(current => ({ ...current, [stagingId]: name }))} onChooseFile={() => void choose({ filters: [{ name: "Supported mods", extensions: ["zip", "7z", "rar", "pak", "utoc", "ucas"] }] })} onChooseFolder={() => void choose({ directory: true })} onInstall={mod => void install(mod)} onInstallRuntime={mod => void installRuntimeFrom(mod)} onCancel={() => void discardPreviews()} />}
     {page === "diagnostics" && <DiagnosticsPage report={diagnostics} loading={loading} onRun={() => void runDiagnostics()} onCopy={() => void navigator.clipboard.writeText(diagnostics?.text ?? "").then(() => notify("Diagnostic report copied."))} />}
-    {page === "settings" && <SettingsPage settings={settings} retoc={dashboard.retoc} onChange={setSettings} onSave={() => void saveSettings()} onPickGame={() => void locateGame()} onPickRetoc={async () => { const picked = await open({ multiple: false, title: "Select retoc executable" }); if (typeof picked === "string") setSettings({ ...settings, retocPath: picked }); }} onOpenLogs={() => void openFolder("logs")} onOpenData={() => void openFolder("data")} links={links} onOpenLink={openExternal} nexus={nexus} nexusAccount={nexusAccount} onSaveNexusKey={saveNexusKey} onClearNexusKey={clearNexusKey} onToggleNxmHandler={toggleNxmHandler} />}
+    {page === "settings" && <SettingsPage settings={settings} retoc={dashboard.retoc} onChange={setSettings} onSave={() => void saveSettings()} onPickGame={() => void locateGame()} onPickExecutable={async () => { const picked = await open({ multiple: false, title: "Select game executable or launcher" }); if (typeof picked === "string") setSettings({ ...settings, customExecutablePath: picked }); }} onPickRetoc={async () => { const picked = await open({ multiple: false, title: "Select retoc executable" }); if (typeof picked === "string") setSettings({ ...settings, retocPath: picked }); }} onOpenLogs={() => void openFolder("logs")} onOpenData={() => void openFolder("data")} links={links} onOpenLink={openExternal} nexus={nexus} nexusAccount={nexusAccount} onSaveNexusKey={saveNexusKey} onClearNexusKey={clearNexusKey} onToggleNxmHandler={toggleNxmHandler} />}
     {page === "about" && <AboutPage projectUrl={links.project} onOpenLink={openExternal} update={update} checking={updateChecking} error={updateError} onCheckUpdates={() => void checkUpdates(true)} />}
+    {discoveringExisting && <div className="scan-indicator" role="status"><span className="spin" />Scanning game folders for existing mods…</div>}
+    {existingReview && existingScan && <AdoptionDialog scan={existingScan} busy={adoptingExisting} onClose={() => setExistingReview(false)} onAdopt={adoptExisting} />}
     {toast && <div className={`toast ${toast.kind}`} role="status">{toast.text}</div>}
   </Shell>;
 }

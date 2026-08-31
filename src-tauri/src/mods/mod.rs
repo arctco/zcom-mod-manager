@@ -1,4 +1,4 @@
-mod naming;
+pub(crate) mod naming;
 
 use crate::{
     archives,
@@ -186,7 +186,14 @@ struct Bucket {
     /// A name derived from the payload itself, used when the archive name
     /// cannot stand in because it describes more than one mod.
     intrinsic_name: Option<String>,
+    packages: Vec<String>,
+    package_paths: Vec<String>,
+    verification: String,
+    verification_details: Option<String>,
+    option_label: Option<String>,
 }
+
+type ContainerGroup = (String, BTreeMap<String, PathBuf>);
 
 #[allow(clippy::too_many_arguments)]
 pub fn scan(
@@ -279,6 +286,7 @@ fn collect(
             recommended_priority: None,
             load_order_supported: false,
             load_order_support_reason: None,
+            option_label: None,
         };
         let staged = StagedMod {
             staging_id: preview.staging_id.clone(),
@@ -361,6 +369,11 @@ fn collect(
             files: payload,
             keys: vec![key],
             intrinsic_name: (folder != root).then(|| display_name(&file_name(folder))),
+            packages: Vec::new(),
+            package_paths: Vec::new(),
+            verification: "not-required".into(),
+            verification_details: None,
+            option_label: None,
         });
     }
 
@@ -388,85 +401,165 @@ fn collect(
                 .insert(ext, file.clone());
         }
     }
-    let has_iostore = groups
-        .values()
-        .any(|g| g.contains_key("utoc") || g.contains_key("ucas"));
-    let mut packages = Vec::new();
-    let mut package_paths = Vec::new();
-    let mut verification = "not-required".to_string();
-    let mut details: Option<String> = None;
     if !groups.is_empty() {
-        let mut payload = Vec::new();
-        let mut package_owners: BTreeMap<String, String> = BTreeMap::new();
-        if has_iostore {
-            verification = "passed".into();
-        }
-        for ((_parent, stem), group) in groups
+        // Publishers regularly put mutually exclusive strengths/versions in
+        // sibling folders. Flattening all of them into one payload makes every
+        // variant load at once. Separate distinct containing folders into
+        // labeled previews, while keeping multiple containers from the same
+        // folder together as one mod.
+        let parents = groups
+            .keys()
+            .map(|(parent, _)| parent.clone())
+            .collect::<BTreeSet<_>>();
+        let split_options = parents.len() > 1;
+        let relative_parents = parents
             .iter()
-            .filter(|(_, g)| !has_iostore || g.contains_key("utoc") || g.contains_key("ucas"))
-        {
-            if has_iostore {
-                let mut missing = Vec::new();
-                if !group.contains_key("utoc") {
-                    missing.push(format!("{stem}.utoc"))
-                }
-                if !group.contains_key("ucas") {
-                    missing.push(format!("{stem}.ucas"))
-                }
-                if !missing.is_empty() {
-                    return Err(AppError::MissingIoStoreComponent(missing.join(", ")));
-                }
-            }
-            for ext in ["pak", "utoc", "ucas"] {
-                if let Some(path) = group.get(ext) {
-                    let name = PathBuf::from(file_name(path));
-                    payload.push(PayloadFile {
-                        source: path.clone(),
-                        library_relative: name.clone(),
-                        destination_relative: name,
-                    });
-                    claimed.insert(path.clone());
-                }
-            }
-            let Some(utoc) = group.get("utoc") else {
-                continue;
-            };
-            match retoc::inspect(tool, utoc) {
-                Ok(info) => {
-                    register_package_owners(&mut package_owners, stem, &info.package_ids)?;
-                    packages.extend(info.package_ids);
-                    package_paths.extend(info.package_paths);
-                    details = Some(match details {
-                        Some(previous) => format!("{previous}\n{}", info.details),
-                        None => info.details,
+            .map(|parent| {
+                rel(root, parent).map(|relative| {
+                    relative
+                        .components()
+                        .filter_map(|component| match component {
+                            Component::Normal(value) => Some(value.to_string_lossy().into_owned()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let common_prefix = relative_parents
+            .first()
+            .map(|first| {
+                (0..first.len())
+                    .take_while(|index| {
+                        relative_parents
+                            .iter()
+                            .all(|parts| parts.get(*index) == first.get(*index))
                     })
-                }
-                Err(AppError::RetocNotFound) => {
-                    if verification != "failed" {
-                        verification = "unavailable".into();
+                    .count()
+            })
+            .unwrap_or(0);
+        let option_labels = parents
+            .iter()
+            .zip(relative_parents.iter())
+            .filter_map(|(parent, parts)| {
+                parts
+                    .get(common_prefix)
+                    .cloned()
+                    .map(|label| (parent.clone(), label))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut partitions: BTreeMap<Option<PathBuf>, Vec<ContainerGroup>> = BTreeMap::new();
+        for ((parent, stem), group) in groups {
+            partitions
+                .entry(split_options.then_some(parent))
+                .or_default()
+                .push((stem, group));
+        }
+        for (parent, groups) in partitions {
+            let has_iostore = groups
+                .iter()
+                .any(|(_, group)| group.contains_key("utoc") || group.contains_key("ucas"));
+            let mut packages = Vec::new();
+            let mut package_paths = Vec::new();
+            let mut verification = if has_iostore {
+                "passed".to_string()
+            } else {
+                "not-required".to_string()
+            };
+            let mut details: Option<String> = None;
+            let mut payload = Vec::new();
+            let mut package_owners: BTreeMap<String, String> = BTreeMap::new();
+            for (stem, group) in groups.iter().filter(|(_, group)| {
+                !has_iostore || group.contains_key("utoc") || group.contains_key("ucas")
+            }) {
+                if has_iostore {
+                    let mut missing = Vec::new();
+                    if !group.contains_key("utoc") {
+                        missing.push(format!("{stem}.utoc"))
                     }
-                    details = Some(AppError::RetocNotFound.to_string())
+                    if !group.contains_key("ucas") {
+                        missing.push(format!("{stem}.ucas"))
+                    }
+                    if !missing.is_empty() {
+                        return Err(AppError::MissingIoStoreComponent(missing.join(", ")));
+                    }
                 }
-                Err(error) => {
-                    verification = "failed".into();
-                    details = Some(error.to_string())
+                for ext in ["pak", "utoc", "ucas"] {
+                    if let Some(path) = group.get(ext) {
+                        let name = PathBuf::from(file_name(path));
+                        payload.push(PayloadFile {
+                            source: path.clone(),
+                            library_relative: name.clone(),
+                            destination_relative: name,
+                        });
+                        claimed.insert(path.clone());
+                    }
+                }
+                let Some(utoc) = group.get("utoc") else {
+                    continue;
+                };
+                match retoc::inspect(tool, utoc) {
+                    Ok(info) => {
+                        register_package_owners(&mut package_owners, stem, &info.package_ids)?;
+                        packages.extend(info.package_ids);
+                        package_paths.extend(info.package_paths);
+                        details = Some(match details {
+                            Some(previous) => format!("{previous}\n{}", info.details),
+                            None => info.details,
+                        })
+                    }
+                    Err(AppError::RetocNotFound) => {
+                        if verification != "failed" {
+                            verification = "unavailable".into();
+                        }
+                        details = Some(AppError::RetocNotFound.to_string())
+                    }
+                    Err(error) => {
+                        verification = "failed".into();
+                        details = Some(error.to_string())
+                    }
                 }
             }
-        }
-        if !payload.is_empty() {
-            let intrinsic = display_name(
-                &payload[0]
-                    .library_relative
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy(),
-            );
-            buckets.push(Bucket {
-                kind: if has_iostore { "iostore" } else { "pak" },
-                files: payload,
-                keys: Vec::new(),
-                intrinsic_name: Some(intrinsic),
-            });
+            if !payload.is_empty() {
+                let option_label = parent.as_ref().map(|path| {
+                    option_labels.get(path).cloned().unwrap_or_else(|| {
+                        display_name(
+                            groups
+                                .first()
+                                .map(|(stem, _)| stem.as_str())
+                                .unwrap_or("Mod"),
+                        )
+                    })
+                });
+                let intrinsic = option_label.as_ref().map_or_else(
+                    || {
+                        display_name(
+                            &payload[0]
+                                .library_relative
+                                .file_stem()
+                                .unwrap_or_default()
+                                .to_string_lossy(),
+                        )
+                    },
+                    |label| {
+                        format!(
+                            "{} — {label}",
+                            source_name.clone().unwrap_or_else(|| "Packaged mod".into())
+                        )
+                    },
+                );
+                buckets.push(Bucket {
+                    kind: if has_iostore { "iostore" } else { "pak" },
+                    files: payload,
+                    keys: Vec::new(),
+                    intrinsic_name: Some(intrinsic),
+                    packages,
+                    package_paths,
+                    verification,
+                    verification_details: details,
+                    option_label,
+                });
+            }
         }
     }
 
@@ -513,6 +606,11 @@ fn collect(
             files: gamedir,
             keys: Vec::new(),
             intrinsic_name: None,
+            packages: Vec::new(),
+            package_paths: Vec::new(),
+            verification: "not-required".into(),
+            verification_details: None,
+            option_label: None,
         });
     }
 
@@ -551,9 +649,11 @@ fn collect(
         // The archive name is what the person downloaded and recognizes, so it
         // wins whenever it can only mean this one mod. A manifest still wins
         // over both, and every name can be edited before installing.
-        let name = manifest
+        let name = bucket
+            .option_label
             .as_ref()
-            .map(|m| m.name.clone())
+            .and(bucket.intrinsic_name.clone())
+            .or_else(|| manifest.as_ref().map(|m| m.name.clone()))
             .or_else(|| {
                 if single {
                     source_name.clone()
@@ -581,7 +681,10 @@ fn collect(
             });
         }
         let (verification, details) = if bucket.kind == "iostore" || bucket.kind == "pak" {
-            (verification.clone(), details.clone())
+            (
+                bucket.verification.clone(),
+                bucket.verification_details.clone(),
+            )
         } else {
             ("not-required".to_string(), None)
         };
@@ -601,13 +704,13 @@ fn collect(
         }
         let staging_id = Uuid::new_v4().to_string();
         let mut bucket_packages = if bucket.kind == "iostore" {
-            packages.clone()
+            bucket.packages.clone()
         } else {
             Vec::new()
         };
         bucket_packages.sort();
         bucket_packages.dedup();
-        let mut names = package_paths.clone();
+        let mut names = bucket.package_paths.clone();
         names.sort();
         names.dedup();
         let staged = StagedMod {
@@ -680,6 +783,7 @@ fn collect(
                 }
                 _ => None,
             },
+            option_label: bucket.option_label.clone(),
         };
         result.push((staged, preview));
     }
@@ -734,6 +838,43 @@ mod tests {
         assert!(p.valid);
         assert!(!p.load_order_supported);
         assert!(p.load_order_support_reason.is_some());
+    }
+
+    #[test]
+    fn sibling_packaged_folders_become_selectable_options() {
+        let s = tempdir().unwrap();
+        let c = tempdir().unwrap();
+        write(&s.path().join("25% (Big Cheat)/Discount25_P.pak"), b"25");
+        write(
+            &s.path().join("Free (Mega Cheat)/DiscountFree_P.pak"),
+            b"free",
+        );
+
+        let found = scan(s.path(), c.path(), &tool(), None, false, false).unwrap();
+
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].1.option_label.as_deref(), Some("25% (Big Cheat)"));
+        assert_eq!(
+            found[1].1.option_label.as_deref(),
+            Some("Free (Mega Cheat)")
+        );
+        assert_eq!(found[0].1.files, vec!["Discount25_P.pak"]);
+        assert_eq!(found[1].1.files, vec!["DiscountFree_P.pak"]);
+        assert!(found[0].1.name.contains("25% (Big Cheat)"));
+        assert!(found[1].1.name.contains("Free (Mega Cheat)"));
+    }
+
+    #[test]
+    fn containers_in_one_folder_stay_one_mod() {
+        let s = tempdir().unwrap();
+        let c = tempdir().unwrap();
+        write(&s.path().join("Combined/PartOne_P.pak"), b"one");
+        write(&s.path().join("Combined/PartTwo_P.pak"), b"two");
+
+        let (_, preview) = one(s.path(), c.path(), false);
+
+        assert_eq!(preview.files.len(), 2);
+        assert_eq!(preview.option_label, None);
     }
 
     #[test]

@@ -31,10 +31,22 @@ const dashboard: Dashboard = {
   },
   previousBuildId: null,
   dataDirectory: "/data/zcom",
-  retoc: { found: true, path: "/bin/retoc", version: "retoc 0.1.5" }
+  retoc: { found: true, path: "/bin/retoc", version: "retoc 0.1.5" },
+  existingModScanPending: false
 };
 
 describe("home desktop actions", () => {
+  it("offers review and dismissal when existing mods are found", async () => {
+    const onReviewExisting = vi.fn();
+    const onDismissExisting = vi.fn();
+    render(<HomePage data={dashboard} onInstall={vi.fn()} onDiagnose={vi.fn()} onLocate={vi.fn()} onOpenMods={vi.fn()} onOpenGame={vi.fn()} onLaunchGame={vi.fn()} onGetUe4ss={vi.fn()} onInstallUe4ss={vi.fn()} busy={false} launching={false} existingModsFound={3} onReviewExisting={onReviewExisting} onDismissExisting={onDismissExisting} />);
+    expect(screen.getByText("Existing mods found")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Review existing mods" }));
+    await userEvent.click(screen.getByRole("button", { name: "Not now" }));
+    expect(onReviewExisting).toHaveBeenCalledOnce();
+    expect(onDismissExisting).toHaveBeenCalledOnce();
+  });
+
   it("routes folder and launch buttons through explicit callbacks", async () => {
     const onOpenMods = vi.fn();
     const onOpenGame = vi.fn();
@@ -76,6 +88,26 @@ describe("home desktop actions", () => {
       launching={false}
     />);
     expect((screen.getByRole("button", { name: "Launch game" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("allows a configured custom launcher when Steam detection is unavailable", async () => {
+    const onLaunchGame = vi.fn();
+    render(<HomePage
+      data={{ ...dashboard, game: { ...dashboard.game, detected: false, path: null } }}
+      onInstall={vi.fn()}
+      onDiagnose={vi.fn()}
+      onLocate={vi.fn()}
+      onOpenMods={vi.fn()}
+      onOpenGame={vi.fn()}
+      onLaunchGame={onLaunchGame}
+      onGetUe4ss={vi.fn()}
+      onInstallUe4ss={vi.fn()}
+      busy={false}
+      launching={false}
+      canLaunch
+    />);
+    await userEvent.click(screen.getByRole("button", { name: "Launch game" }));
+    expect(onLaunchGame).toHaveBeenCalledOnce();
   });
 });
 

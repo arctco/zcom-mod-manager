@@ -2,6 +2,27 @@
 
 All notable changes are documented here.
 
+## Unreleased
+
+## 0.4.0
+
+- Archives containing packaged variants in separate folders now present each
+  folder as a labeled installation option. This fixes downloads such as
+  Blackmarket Discounts, whose four strengths were previously flattened into
+  one mod and would all be installed together.
+- Added an optional custom game executable or launcher in Settings. Home uses
+  it instead of the Steam URI when configured, and **Use Steam** clears the
+  override.
+- Added existing-mod discovery and adoption for PAK/IoStore containers, UE4SS
+  folders, and additive LogicMods. A first-connection prompt and a permanent
+  Mods-page action open a review wizard. Adoption copies payloads into the
+  managed library without moving, renaming, or rewriting live files, and each
+  selected group succeeds or fails independently.
+- Migration preserves UE4SS enabled state and order from `mods.txt`, supports
+  merging packaged container families, excludes already managed destinations,
+  blocks incomplete or unverifiable IoStore sets, and reports replacement-style
+  injectors that cannot be adopted without an original-file backup.
+
 ## 0.3.0
 
 - Added UE4SS start-order management. The Load order tab lists UE4SS mods in

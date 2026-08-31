@@ -69,6 +69,8 @@ pub struct Dashboard {
     pub previous_build_id: Option<String>,
     pub data_directory: String,
     pub retoc: ToolInfo,
+    /// Whether the one-time existing-mod discovery has not yet been shown.
+    pub existing_mod_scan_pending: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -263,6 +265,59 @@ pub struct ModPreview {
     pub recommended_priority: Option<i64>,
     pub load_order_supported: bool,
     pub load_order_support_reason: Option<String>,
+    /// A containing folder that represents one selectable packaged option in
+    /// an archive with several sibling variants/components.
+    pub option_label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExistingModCandidate {
+    pub id: String,
+    pub name: String,
+    pub version: Option<String>,
+    pub mod_type: String,
+    /// Display-only paths relative to one of the controlled mod roots.
+    pub files: Vec<String>,
+    pub enabled: bool,
+    pub package_count: usize,
+    pub warnings: Vec<String>,
+    pub adoptable: bool,
+    pub blocked_reason: Option<String>,
+    pub selected_by_default: bool,
+    pub likely_runtime_component: bool,
+    pub inferred_priority: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExistingModScan {
+    pub scan_id: String,
+    pub candidates: Vec<ExistingModCandidate>,
+    pub unsupported: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdoptionGroup {
+    pub candidate_ids: Vec<String>,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdoptionOutcome {
+    pub candidate_ids: Vec<String>,
+    pub name: String,
+    pub mod_summary: Option<ModSummary>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdoptionReport {
+    pub outcomes: Vec<AdoptionOutcome>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -286,6 +341,7 @@ pub struct DiagnosticReport {
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub game_path: Option<String>,
+    pub custom_executable_path: Option<String>,
     pub retoc_path: Option<String>,
     pub log_level: String,
     pub advanced_package_names: bool,
@@ -296,10 +352,17 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             game_path: None,
+            custom_executable_path: None,
             retoc_path: None,
             log_level: "normal".into(),
             advanced_package_names: false,
             reduced_motion: false,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchReport {
+    pub method: String,
 }

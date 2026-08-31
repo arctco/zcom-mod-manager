@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ZCOM Mod Manager",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "identifier": "org.zcommodmanager.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -29,7 +29,7 @@
     "targets": ["deb", "appimage", "nsis"],
     "category": "Utility",
     "shortDescription": "Safe mod management for Star Wars: Zero Company",
-    "longDescription": "A dedicated open-source mod manager with Steam discovery, IoStore verification, UE4SS support, conflicts, and checksum-safe deployment.",
+    "longDescription": "A dedicated open-source mod manager with safe existing-mod migration, packaged variant selection, custom game launching, IoStore verification, UE4SS support, conflicts, and checksum-safe deployment.",
     "copyright": "Copyright © 2026 Victor Hugo (arctco)",
     "licenseFile": "../LICENSE",
     "externalBin": ["binaries/retoc"],

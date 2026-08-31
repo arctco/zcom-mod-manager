@@ -12,7 +12,8 @@ const preview = (stagingId: string, name: string, modType: PreviewType = "ue4ss"
   description: null, modType, files: [`${name}/Scripts/main.lua`], warnings: [], valid: true,
   verification: "not-required", verificationDetails: null, packageCount: 0, packageNames: [],
   compatibility: "unknown", compatibilityMessage: "Unknown", testedBuilds: [], conflicts: [], replaces: null,
-  recommendedPriority: null, loadOrderSupported: false, loadOrderSupportReason: null
+  recommendedPriority: null, loadOrderSupported: false, loadOrderSupportReason: null,
+  optionLabel: null
 });
 
 function props(overrides: Partial<Parameters<typeof InstallPage>[0]> = {}): Parameters<typeof InstallPage>[0] {
@@ -30,6 +31,16 @@ describe("install preview", () => {
     const fields = screen.getAllByLabelText("Mod name") as HTMLInputElement[];
     expect(fields.map(field => field.value)).toEqual(["ShadowsCore", "ShadowsTweaks"]);
     expect(screen.getAllByRole("button", { name: "Install" })).toHaveLength(2);
+  });
+
+  it("labels mutually selectable packaged folders clearly", () => {
+    const big = { ...preview("a", "Blackmarket Discounts — 25%", "pak"), optionLabel: "25% (Big Cheat)" };
+    const free = { ...preview("b", "Blackmarket Discounts — Free", "pak"), optionLabel: "Free (Mega Cheat)" };
+    render(<InstallPage {...props({ previews: [big, free] })} />);
+    expect(screen.getByText("2 packaged options found")).toBeDefined();
+    expect(screen.getByText("ARCHIVE OPTION · 25% (Big Cheat)")).toBeDefined();
+    expect(screen.getByText("ARCHIVE OPTION · Free (Mega Cheat)")).toBeDefined();
+    expect(screen.getByText(/alternatives may conflict/i)).toBeDefined();
   });
 
   it("reports an edited name and installs the mod it belongs to", async () => {

@@ -45,7 +45,7 @@ function Candidate({ preview, name, advanced, installing, onName, onAdvanced, on
     <div className="preview-title">
       <div className="mod-icon large"><Archive aria-hidden /></div>
       <div className="preview-naming">
-        <p className="eyebrow">{runtime ? "RUNTIME PACKAGE" : "INSTALLATION PREVIEW"}</p>
+        <p className="eyebrow">{runtime ? "RUNTIME PACKAGE" : preview.optionLabel ? `ARCHIVE OPTION · ${preview.optionLabel}` : "INSTALLATION PREVIEW"}</p>
         {runtime ? <h2>{preview.name}</h2> : <label className="name-field">
           <span><Pencil aria-hidden size={14} />Mod name</span>
           <input value={name} onChange={event => onName(preview.stagingId, event.target.value)} maxLength={120} aria-label="Mod name" placeholder={preview.name} />
@@ -82,6 +82,8 @@ function Candidate({ preview, name, advanced, installing, onName, onAdvanced, on
 
 export function InstallPage({ previews, names, loading, download, advanced, installing, onAdvanced, onName, onChooseFile, onChooseFolder, onInstall, onInstallRuntime, onCancel }: Props) {
   const many = previews.length > 1;
+  const optionCount = previews.filter(preview => preview.optionLabel).length;
+  const additionalCount = previews.length - optionCount;
   return <div className="page install-page">
     <header className="page-header"><div><p className="eyebrow">SAFE INSTALLER</p><h1>{previews.length ? "Review mod" : "Install a mod"}</h1><p className="muted">Nothing is deployed until validation succeeds and you confirm.</p></div>{previews.length > 0 && <button onClick={onCancel}><X size={17} />{many ? "Cancel all" : "Cancel"}</button>}</header>
     {previews.length === 0
@@ -95,7 +97,7 @@ export function InstallPage({ previews, names, loading, download, advanced, inst
       </section>
       : <div className="preview-grid">
         <div className="preview-stack">
-          {many && <div className="inline-note" role="status"><b>{previews.length} mods found in this download</b><span>Each one is named and installed separately. Skip any you do not want by leaving it uninstalled and cancelling the rest.</span></div>}
+          {many && <div className="inline-note" role="status"><b>{optionCount ? `${optionCount} packaged options${additionalCount ? ` and ${additionalCount} additional mod${additionalCount === 1 ? "" : "s"}` : ""} found` : `${previews.length} mods found in this download`}</b><span>{optionCount ? "Each containing folder is a separate version or component. Install only the option or options you want; alternatives may conflict if installed together." : "Each one is named and installed separately. Skip any you do not want by leaving it uninstalled and cancelling the rest."}</span></div>}
           {previews.map(preview => <Candidate key={preview.stagingId} preview={preview} name={names[preview.stagingId] ?? preview.name} advanced={advanced} installing={installing} onName={onName} onAdvanced={onAdvanced} onInstall={onInstall} onInstallRuntime={onInstallRuntime} />)}
         </div>
         <aside className="panel safety-note"><ShieldCheck aria-hidden /><h2>Safe by default</h2><p>The manager keeps its own source copy, deploys only recognized payload files, and records a SHA-256 checksum for every destination.</p><ul><li>No executables are run</li><li>Unknown files are ignored</li><li>Partial installs roll back</li><li>Replaced game files are kept and restored</li><li>Changed files are kept on removal</li></ul></aside>

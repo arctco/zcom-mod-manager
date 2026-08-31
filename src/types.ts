@@ -69,6 +69,7 @@ export interface Dashboard {
   previousBuildId: string | null;
   dataDirectory: string;
   retoc: ToolInfo;
+  existingModScanPending: boolean;
 }
 
 export interface ToolInfo {
@@ -195,6 +196,47 @@ export interface ModPreview {
   recommendedPriority: number | null;
   loadOrderSupported: boolean;
   loadOrderSupportReason: string | null;
+  /** Folder label for one selectable option in a multi-option archive. */
+  optionLabel: string | null;
+}
+
+export interface ExistingModCandidate {
+  id: string;
+  name: string;
+  version: string | null;
+  modType: ModType;
+  files: string[];
+  enabled: boolean;
+  packageCount: number;
+  warnings: string[];
+  adoptable: boolean;
+  blockedReason: string | null;
+  selectedByDefault: boolean;
+  likelyRuntimeComponent: boolean;
+  inferredPriority: number | null;
+}
+
+export interface ExistingModScan {
+  scanId: string;
+  candidates: ExistingModCandidate[];
+  unsupported: string[];
+  warnings: string[];
+}
+
+export interface AdoptionGroup {
+  candidateIds: string[];
+  name: string;
+}
+
+export interface AdoptionOutcome {
+  candidateIds: string[];
+  name: string;
+  modSummary: ModSummary | null;
+  error: string | null;
+}
+
+export interface AdoptionReport {
+  outcomes: AdoptionOutcome[];
 }
 
 export interface DiagnosticItem {
@@ -212,8 +254,13 @@ export interface DiagnosticReport {
 
 export interface AppSettings {
   gamePath: string | null;
+  customExecutablePath: string | null;
   retocPath: string | null;
   logLevel: "normal" | "verbose" | "developer";
   advancedPackageNames: boolean;
   reducedMotion: boolean;
+}
+
+export interface LaunchReport {
+  method: "steam" | "custom-executable";
 }

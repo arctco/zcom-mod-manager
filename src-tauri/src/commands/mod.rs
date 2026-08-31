@@ -1,10 +1,11 @@
 use crate::{
-    database, deployment, diagnostics,
+    adoption, database, deployment, diagnostics,
     error::{AppError, Result},
     load_order,
     models::{
-        AppSettings, Dashboard, DiagnosticReport, GameInfo, LoadOrderPreview, LoadOrderState,
-        ModPreview, ModSummary, ReplacedMod, StagedMod,
+        AdoptionGroup, AdoptionReport, AppSettings, Dashboard, DiagnosticReport, ExistingModScan,
+        GameInfo, LaunchReport, LoadOrderPreview, LoadOrderState, ModPreview, ModSummary,
+        ReplacedMod, StagedMod,
     },
     mods, retoc, steam, ue4ss, AppContext,
 };
@@ -50,6 +51,14 @@ fn previews(
         .map_err(|_| AppError::Other("preview state lock was poisoned".into()))
 }
 
+fn discoveries(
+    ctx: &AppContext,
+) -> Result<MutexGuard<'_, std::collections::HashMap<String, adoption::ScanSnapshot>>> {
+    ctx.discoveries
+        .lock()
+        .map_err(|_| AppError::Other("existing-mod discovery lock was poisoned".into()))
+}
+
 #[tauri::command]
 pub fn get_dashboard(ctx: State<'_, AppContext>) -> Result<Dashboard> {
     let conn = connection(&ctx)?;
@@ -60,6 +69,9 @@ pub fn get_dashboard(ctx: State<'_, AppContext>) -> Result<Dashboard> {
     let compat = game.compat_data_path.as_deref().map(Path::new);
     let ue4ss = ue4ss::detect(game_path, compat);
     let retoc = tool(&ctx)?;
+    let existing_mod_scan_pending =
+        database::get_setting(&conn, "existing_mod_prompt_acknowledged")?.as_deref()
+            != Some("true");
     Ok(Dashboard {
         game,
         installed_mods,
@@ -69,11 +81,105 @@ pub fn get_dashboard(ctx: State<'_, AppContext>) -> Result<Dashboard> {
         previous_build_id: ctx.previous_build_id.clone(),
         data_directory: ctx.data_dir.display().to_string(),
         retoc,
+        existing_mod_scan_pending,
     })
 }
 #[tauri::command]
 pub fn list_mods(ctx: State<'_, AppContext>) -> Result<Vec<ModSummary>> {
     database::list_mods(&connection(&ctx)?)
+}
+
+#[tauri::command]
+pub fn discover_existing_mods(ctx: State<'_, AppContext>) -> Result<ExistingModScan> {
+    let (game_info, game_path) = require_game(&ctx)?;
+    let conn = connection(&ctx)?;
+    let settings = database::settings(&conn)?;
+    let retoc = retoc::find(settings.retoc_path.as_deref());
+    let (scan, snapshot) = adoption::discover(&conn, &game_path, &retoc)?;
+    let mut held = discoveries(&ctx)?;
+    // Discovery snapshots point into the live game folder and are useful only
+    // to the currently visible review. Dropping older scans also bounds memory.
+    held.clear();
+    held.insert(scan.scan_id.clone(), snapshot);
+    drop(held);
+    log(
+        &ctx,
+        "info",
+        "existing_mods_discovered",
+        &format!(
+            "candidates={} unsupported={} build={}",
+            scan.candidates.len(),
+            scan.unsupported.len(),
+            game_info.steam_build_id.as_deref().unwrap_or("unknown")
+        ),
+    );
+    Ok(scan)
+}
+
+#[tauri::command]
+pub fn acknowledge_existing_mod_prompt(ctx: State<'_, AppContext>) -> Result<()> {
+    database::set_setting(
+        &connection(&ctx)?,
+        "existing_mod_prompt_acknowledged",
+        "true",
+    )
+}
+
+#[tauri::command]
+pub fn adopt_existing_mods(
+    scan_id: String,
+    groups: Vec<AdoptionGroup>,
+    ctx: State<'_, AppContext>,
+) -> Result<AdoptionReport> {
+    let (game_info, _) = require_game(&ctx)?;
+    let snapshot = discoveries(&ctx)?.get(&scan_id).cloned().ok_or_else(|| {
+        AppError::Other("That discovery expired. Scan the game folders again.".into())
+    })?;
+    let mut conn = connection(&ctx)?;
+    let report = adoption::adopt(
+        &mut conn,
+        &ctx.mods_dir,
+        &ctx.data_dir,
+        &snapshot,
+        &groups,
+        game_info.steam_build_id,
+    );
+    let successful = report
+        .outcomes
+        .iter()
+        .filter(|outcome| outcome.mod_summary.is_some())
+        .flat_map(|outcome| outcome.candidate_ids.iter().cloned())
+        .collect::<std::collections::HashSet<_>>();
+    if !successful.is_empty() {
+        let mut held = discoveries(&ctx)?;
+        if let Some(snapshot) = held.get_mut(&scan_id) {
+            snapshot
+                .candidates
+                .retain(|candidate, _| !successful.contains(candidate));
+            if snapshot.candidates.is_empty() {
+                held.remove(&scan_id);
+            }
+        }
+    }
+    log(
+        &ctx,
+        "info",
+        "existing_mods_adopted",
+        &format!(
+            "succeeded={} failed={}",
+            report
+                .outcomes
+                .iter()
+                .filter(|outcome| outcome.mod_summary.is_some())
+                .count(),
+            report
+                .outcomes
+                .iter()
+                .filter(|outcome| outcome.error.is_some())
+                .count()
+        ),
+    );
+    Ok(report)
 }
 
 #[tauri::command]
@@ -611,6 +717,13 @@ pub fn save_settings(mut settings: AppSettings, ctx: State<'_, AppContext>) -> R
     if settings.retoc_path.as_deref() == Some("") {
         settings.retoc_path = None
     }
+    if settings
+        .custom_executable_path
+        .as_deref()
+        .is_some_and(|path| path.trim().is_empty())
+    {
+        settings.custom_executable_path = None
+    }
     database::save_settings(&connection(&ctx)?, &settings)
 }
 #[tauri::command]
@@ -672,14 +785,61 @@ pub fn open_managed_path(kind: String, app: AppHandle, ctx: State<'_, AppContext
     Ok(())
 }
 
+fn configured_executable(settings: &AppSettings) -> Result<Option<(PathBuf, PathBuf)>> {
+    let Some(path) = settings
+        .custom_executable_path
+        .as_deref()
+        .filter(|path| !path.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    let executable = PathBuf::from(path);
+    if !executable.is_file() {
+        return Err(AppError::Other(
+            "The custom game executable no longer exists. Choose it again in Settings or clear it to use Steam."
+                .into(),
+        ));
+    }
+    let working_directory = executable
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| {
+            AppError::Other("The custom game executable has no containing folder.".into())
+        })?
+        .to_path_buf();
+    Ok(Some((executable, working_directory)))
+}
+
 #[tauri::command]
-pub fn launch_game(app: AppHandle, ctx: State<'_, AppContext>) -> Result<()> {
+pub fn launch_game(app: AppHandle, ctx: State<'_, AppContext>) -> Result<LaunchReport> {
+    let settings = database::settings(&connection(&ctx)?)?;
+    if let Some((executable, working_directory)) = configured_executable(&settings)? {
+        std::process::Command::new(&executable)
+            .current_dir(&working_directory)
+            .spawn()
+            .map_err(|error| {
+                AppError::Other(format!(
+                    "The custom game executable could not be launched: {error}. Choose a compatible executable or launcher in Settings."
+                ))
+            })?;
+        log(
+            &ctx,
+            "info",
+            "game_launch_requested",
+            &format!("source=custom_executable path={}", executable.display()),
+        );
+        return Ok(LaunchReport {
+            method: "custom-executable".into(),
+        });
+    }
     require_game(&ctx)?;
     app.opener()
         .open_url(steam::launch_url(), None::<String>)
         .map_err(|error| AppError::Other(format!("Steam could not launch the game: {error}")))?;
     log(&ctx, "info", "game_launch_requested", "source=steam_uri");
-    Ok(())
+    Ok(LaunchReport {
+        method: "steam".into(),
+    })
 }
 
 pub fn log(ctx: &AppContext, level: &str, event: &str, detail: &str) {
@@ -915,7 +1075,10 @@ pub async fn nexus_download(url: String, app: tauri::AppHandle) -> Result<String
 
 #[cfg(test)]
 mod update_tests {
-    use super::version_is_newer;
+    use super::{configured_executable, version_is_newer};
+    use crate::models::AppSettings;
+    use std::fs;
+    use tempfile::tempdir;
 
     #[test]
     fn compares_release_versions_numerically() {
@@ -923,5 +1086,31 @@ mod update_tests {
         assert!(version_is_newer("0.1.10", "0.1.9"));
         assert!(!version_is_newer("v0.1.4", "0.1.4"));
         assert!(!version_is_newer("0.1.3", "0.1.4"));
+    }
+
+    #[test]
+    fn validates_a_configured_launch_executable_and_uses_its_folder() {
+        let directory = tempdir().unwrap();
+        let executable = directory.path().join("ZeroCompany.exe");
+        fs::write(&executable, b"test executable").unwrap();
+        let settings = AppSettings {
+            custom_executable_path: Some(executable.display().to_string()),
+            ..AppSettings::default()
+        };
+
+        let (selected, working_directory) = configured_executable(&settings).unwrap().unwrap();
+        assert_eq!(selected, executable);
+        assert_eq!(working_directory, directory.path());
+    }
+
+    #[test]
+    fn reports_a_missing_custom_launch_executable() {
+        let settings = AppSettings {
+            custom_executable_path: Some("/missing/ZeroCompany.exe".into()),
+            ..AppSettings::default()
+        };
+        let error = configured_executable(&settings).unwrap_err().to_string();
+        assert!(error.contains("no longer exists"));
+        assert!(error.contains("clear it to use Steam"));
     }
 }

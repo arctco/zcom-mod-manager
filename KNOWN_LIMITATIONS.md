@@ -1,4 +1,4 @@
-# Known Limitations — 0.3.0
+# Known Limitations — 0.4.0
 
 - 7z installation uses the open-source 7-Zip command-line program available on
   the host. ZIP support is built in. A missing `7z` produces setup guidance.
@@ -30,11 +30,18 @@
 - A game-folder mod is the only kind that replaces an existing file. The
   original is kept in the managed library and restored on disable or removal,
   but a file another mod already owns is never overwritten.
+- Existing-mod discovery adopts additive PAK/IoStore, UE4SS, and LogicMods.
+  It reports but does not adopt ReShade and other replacement-style game-folder
+  mods because their pre-mod originals are no longer available to back up.
 - Lua mods bundled inside a UE4SS package are treated as part of the runtime
   and are overwritten on upgrade. Edits to a shipped mod's scripts are lost;
   copy it under a new folder name to keep changes.
 - Steam launch options are inspected heuristically and never edited. On Linux,
   confirm `WINEDLLOVERRIDES="dwmapi=n,b" %command%` manually.
+- The optional custom game launcher starts the selected file with its containing
+  folder as the working directory and does not add command-line arguments. On
+  Linux, select a native launcher or wrapper rather than a Windows executable
+  that the host cannot run directly.
 - retoc can verify only containers supported by retoc 0.1.5. Encrypted or future
   game container formats may require an upstream update.
 - PAK-only mods cannot provide package-level overlap metadata; only destination

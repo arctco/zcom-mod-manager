@@ -14,6 +14,8 @@ interface Props {
   onOpenSource: (mod: ModSummary) => void; onBrowseNexus: () => void;
   onPreviewOrder: (ids: string[]) => void; onApplyOrder: (ids: string[]) => void;
   onApplyUe4ssOrder: (ids: string[]) => void; onCancelOrder: () => void;
+  onDiscover?: () => void;
+  discovering?: boolean;
 }
 
 type Filter = "all" | "enabled" | "disabled" | "conflicts";
@@ -53,7 +55,7 @@ export function winnerFor(group: ConflictGroup, order: string[], entries: LoadOr
   return order.find(id => enabled.has(id) && group.memberIds.includes(id)) ?? null;
 }
 
-export function ModsPage({ mods, loadOrder, orderPreview, busy, orderBusy, onInstall, onToggle, onUninstall, onVerify, onRename, onOpenInstalled, onOpenSource, onBrowseNexus, onPreviewOrder, onApplyOrder, onApplyUe4ssOrder, onCancelOrder }: Props) {
+export function ModsPage({ mods, loadOrder, orderPreview, busy, orderBusy, onInstall, onToggle, onUninstall, onVerify, onRename, onOpenInstalled, onOpenSource, onBrowseNexus, onPreviewOrder, onApplyOrder, onApplyUe4ssOrder, onCancelOrder, onDiscover, discovering }: Props) {
   const [selected, setSelected] = useState<ModSummary | null>(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
@@ -169,7 +171,7 @@ export function ModsPage({ mods, loadOrder, orderPreview, busy, orderBusy, onIns
   </div>;
 
   return <div className="page">
-    <header className="page-header"><div><p className="eyebrow">MANAGED LIBRARY</p><h1>Mods</h1><p className="muted">Every deployed file is ownership-tracked and checksum guarded.</p></div><button className="primary" onClick={onInstall}>Install mod</button></header>
+    <header className="page-header"><div><p className="eyebrow">MANAGED LIBRARY</p><h1>Mods</h1><p className="muted">Every deployed file is ownership-tracked and checksum guarded.</p></div><div className="header-actions"><button onClick={onDiscover} disabled={discovering}>{discovering ? "Scanning…" : "Discover existing mods"}</button><button className="primary" onClick={onInstall}>Install mod</button></div></header>
     <div className="page-tabs" role="tablist" aria-label="Mods views" onKeyDown={event => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); selectTab(tab === "library" ? "load-order" : "library"); } }}><button id="mods-library-tab" role="tab" aria-controls="mods-library-panel" aria-selected={tab === "library"} tabIndex={tab === "library" ? 0 : -1} className={tab === "library" ? "active" : ""} onClick={() => setTab("library")}>Library</button><button id="mods-load-order-tab" role="tab" aria-controls="mods-load-order-panel" aria-selected={tab === "load-order"} tabIndex={tab === "load-order" ? 0 : -1} className={tab === "load-order" ? "active" : ""} onClick={() => setTab("load-order")}>Load order</button></div>
     <div id={`mods-${tab}-panel`} role="tabpanel" aria-labelledby={`mods-${tab}-tab`}>{tab === "library" ? library : orderView}</div>
     {selected && <section className="panel mod-details" aria-label={`${selected.name} details`}><button className="detail-close" onClick={() => setSelected(null)} aria-label="Close details"><X size={17} /></button><p className="eyebrow">MOD DETAILS</p><h2>{selected.name}</h2><div className="detail-list"><div><span>Version</span><b>{selected.version ?? "Not provided"}</b></div><div><span>Type</span><b>{selected.modType}</b></div><div><span>Status</span><b>{selected.enabled ? "Enabled" : "Disabled"}</b></div><div><span>Game build when installed</span><b>{selected.installedBuild ?? "Unknown"}</b></div><div><span>Packages</span><b>{selected.packageCount}</b></div><div><span>Active conflicts</span><b>{selected.conflictCount}</b></div></div><h3>Managed files</h3><ul className="file-list">{selected.files.map(file => <li key={file.destination}>{file.name} · {file.sha256.slice(0, 12)}…</li>)}</ul></section>}
