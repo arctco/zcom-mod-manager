@@ -603,6 +603,10 @@ fn collect(
                 library_relative: relative,
                 destination_relative: destination,
             }),
+            // A manifest was read, not overlooked. Reporting it as an
+            // unrecognized leftover would tell the author their own metadata
+            // file is a problem.
+            None if named(file, "zcom-mod.json") => {}
             None => ignored.push(relative.display().to_string()),
         }
     }
@@ -1040,6 +1044,32 @@ mod tests {
         assert_eq!(kinds, vec!["ue4ss", "pak"]);
         assert_eq!(found[0].1.name, "Extra");
         assert_eq!(found[1].1.name, "Cool");
+    }
+
+    #[test]
+    fn a_manifest_is_not_reported_as_an_unrecognized_leftover() {
+        let s = tempdir().unwrap();
+        let c = tempdir().unwrap();
+        write(&s.path().join("Cool_P.pak"), b"pak");
+        write(
+            &s.path().join("zcom-mod.json"),
+            br#"{
+              "schemaVersion": 1,
+              "id": "community.example.cool",
+              "name": "Cool",
+              "version": "1.0.0",
+              "type": ["pak"]
+            }"#,
+        );
+        write(&s.path().join("readme.txt"), b"hi");
+        let found = scan(s.path(), c.path(), &tool(), None, false, false).unwrap();
+        let warnings = &found[0].1.warnings;
+        assert!(
+            !warnings.iter().any(|w| w.contains("zcom-mod.json")),
+            "the manager read that manifest: {warnings:?}"
+        );
+        // A file it genuinely did not recognise is still reported.
+        assert!(warnings.iter().any(|w| w.contains("readme.txt")), "{warnings:?}");
     }
 
     #[test]

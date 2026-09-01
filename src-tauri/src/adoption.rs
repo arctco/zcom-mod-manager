@@ -768,6 +768,11 @@ fn adopt_group(
         conflict_count: 0,
         potential_conflict_count: 0,
         load_priority,
+        // Attached after installation, when the archive is known to Nexus.
+        nexus_mod_id: None,
+        nexus_url: None,
+        nexus_ignored: false,
+        hidden: false,
         files: rows
             .iter()
             .map(|(_, destination, size, hash)| ModFile {
@@ -862,6 +867,10 @@ mod tests {
             conflict_count: 0,
             potential_conflict_count: 0,
             load_priority: Some(1),
+            nexus_mod_id: None,
+            nexus_url: None,
+            nexus_ignored: false,
+            hidden: false,
             files: Vec::new(),
         };
         let tx = conn.transaction().unwrap();

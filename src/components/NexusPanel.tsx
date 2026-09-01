@@ -9,11 +9,14 @@ interface Props {
   onClearKey: () => Promise<void>;
   onToggleHandler: (enabled: boolean) => Promise<void>;
   onOpenLink: (url: string) => void;
+  /** Saved on the spot, like the key and the handler beside it. */
+  autoCheck: boolean;
+  onAutoCheckChange: (enabled: boolean) => Promise<void>;
 }
 
 const API_KEY_PAGE = "https://www.nexusmods.com/users/myaccount?tab=api";
 
-export function NexusPanel({ status, account, onSaveKey, onClearKey, onToggleHandler, onOpenLink }: Props) {
+export function NexusPanel({ status, account, onSaveKey, onClearKey, onToggleHandler, onOpenLink, autoCheck, onAutoCheckChange }: Props) {
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -50,8 +53,9 @@ export function NexusPanel({ status, account, onSaveKey, onClearKey, onToggleHan
     </label>
     <small className={status?.hasKey ? "success-text" : "muted"}>
       {account ? `Connected as ${account.name} · ${account.premium ? "premium" : "free"} account`
-        : status?.hasKey ? "A key is stored. Save a new one to replace it."
-          : "No key stored yet."}
+        : status?.accountName ? `Connected as ${status.accountName} · ${status.premium ? "premium" : "free"} account`
+          : status?.hasKey ? "A key is stored. Save a new one to replace it."
+            : "No key stored yet."}
     </small>
 
     {status?.storage === "database" && <div className="inline-warning">
@@ -81,6 +85,21 @@ export function NexusPanel({ status, account, onSaveKey, onClearKey, onToggleHan
       <span><code>nxm://</code> links currently open in <b>{status.handlerOwner}</b>. Enabling the
       switch above claims them for this application instead.</span>
     </div>}
+
+    <label className="check">
+      <input
+        type="checkbox"
+        checked={autoCheck}
+        disabled={busy}
+        onChange={e => void run(() => onAutoCheckChange(e.target.checked))}
+      />
+      Check installed mods for updates when the application starts
+    </label>
+    <small>
+      Off by default, and saved as soon as you set it. Only mods matched to a
+      Nexus page are checked, the result stands for several hours before another
+      check is made, and the Mods page can always check on demand instead.
+    </small>
 
     <div className="settings-actions">
       <button onClick={() => onOpenLink(API_KEY_PAGE)}><ExternalLink aria-hidden size={16} />Get an API key</button>

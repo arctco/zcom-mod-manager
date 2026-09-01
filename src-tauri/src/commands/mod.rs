@@ -5,7 +5,7 @@ use crate::{
     models::{
         AdoptionGroup, AdoptionReport, AppSettings, Dashboard, DiagnosticReport, ExistingModScan,
         GameInfo, LaunchReport, LoadOrderPreview, LoadOrderState, ModPreview, ModSummary,
-        ReplacedMod, StagedMod,
+        ModUpdate, ModUpdateReport, ReplacedMod, StagedMod,
     },
     mods, retoc, steam, ue4ss, AppContext,
 };
@@ -544,6 +544,15 @@ pub fn install_mod(
     // sandbox.
     previews(&ctx)?.remove(&staging_id);
     release_staging(&ctx, &staged.staging_root);
+    // A payload that arrived through the nxm:// handoff carries the mod and
+    // file it came from. Recording it here is what later lets the manager ask
+    // Nexus whether a newer file exists; a hand-picked archive records nothing
+    // and is simply never checked.
+    match database::link_nexus_source(&conn, &summary.id, &staged.source_archive) {
+        Ok(true) => log(&ctx, "info", "nexus_source_linked", &format!("mod_id={}", summary.id)),
+        Ok(false) => {}
+        Err(error) => log(&ctx, "warn", "nexus_source_not_linked", &error.to_string()),
+    }
     log(
         &ctx,
         "info",
@@ -566,6 +575,21 @@ pub fn set_mod_enabled(id: String, enabled: bool, ctx: State<'_, AppContext>) ->
         } else {
             "mod_disabled"
         },
+        &format!("mod_id={id}"),
+    );
+    Ok(())
+}
+
+/// Keeps a mod out of the library list without touching what is deployed.
+/// Existing-mod discovery adopts the UE4SS runtime's own bundled mods, which
+/// have to stay installed and ordered but do not need to be looked at.
+#[tauri::command]
+pub fn set_mod_hidden(id: String, hidden: bool, ctx: State<'_, AppContext>) -> Result<()> {
+    database::set_hidden(&connection(&ctx)?, &id, hidden)?;
+    log(
+        &ctx,
+        "info",
+        if hidden { "mod_hidden" } else { "mod_shown" },
         &format!("mod_id={id}"),
     );
     Ok(())
@@ -615,6 +639,10 @@ pub fn get_links() -> Links {
     Links {
         ue4ss_download: ue4ss::DOWNLOAD_URL.into(),
         nexus_game: "https://www.nexusmods.com/games/starwarszerocompany/mods".into(),
+        // The manager's own Nexus page. A release reaches Nexus and GitHub
+        // alike, and someone who found the manager on Nexus expects to update
+        // it there.
+        nexus_manager: "https://www.nexusmods.com/starwarszerocompany/mods/29".into(),
         project: "https://github.com/arctco/zcom-mod-manager".into(),
     }
 }
@@ -624,6 +652,7 @@ pub fn get_links() -> Links {
 pub struct Links {
     pub ue4ss_download: String,
     pub nexus_game: String,
+    pub nexus_manager: String,
     pub project: String,
 }
 
@@ -869,6 +898,14 @@ pub fn log(ctx: &AppContext, level: &str, event: &str, detail: &str) {
 pub struct NexusStatus {
     pub has_key: bool,
     pub storage: Option<crate::credentials::Storage>,
+    /// Who the stored key belongs to, remembered from the moment it was
+    /// verified so Settings can say so again after a restart without asking
+    /// Nexus on every launch.
+    pub account_name: Option<String>,
+    /// A premium account can resolve a download link without the key the
+    /// website mints, which is the only reason a direct update download is
+    /// offered at all.
+    pub premium: bool,
     pub handler_registered: bool,
     /// The application currently handling `nxm://`, when it is not this one.
     /// Claiming the protocol is a real conflict with whatever held it, so the
@@ -892,6 +929,8 @@ pub async fn set_nexus_key(key: String, app: tauri::AppHandle) -> Result<crate::
     let ctx = app.state::<AppContext>();
     let conn = database::open(&ctx.db_path)?;
     let storage = crate::credentials::store(&conn, &key)?;
+    database::set_setting(&conn, "nexus_account_name", &account.name)?;
+    database::set_setting(&conn, "nexus_premium", &account.premium.to_string())?;
     drop(conn);
     log(
         &ctx,
@@ -906,6 +945,9 @@ pub async fn set_nexus_key(key: String, app: tauri::AppHandle) -> Result<crate::
 pub fn clear_nexus_key(ctx: State<'_, AppContext>) -> Result<()> {
     let conn = connection(&ctx)?;
     crate::credentials::clear(&conn)?;
+    for key in ["nexus_account_name", "nexus_premium"] {
+        database::delete_setting(&conn, key)?;
+    }
     log(&ctx, "info", "nexus_key_cleared", "");
     Ok(())
 }
@@ -988,6 +1030,12 @@ fn nexus_status_for(app: &tauri::AppHandle, conn: &rusqlite::Connection) -> Nexu
     let registered = nxm_handler_registered(app);
     NexusStatus {
         has_key: storage.is_some(),
+        account_name: storage
+            .is_some()
+            .then(|| database::get_setting(conn, "nexus_account_name").ok().flatten())
+            .flatten(),
+        premium: storage.is_some()
+            && database::get_setting(conn, "nexus_premium").ok().flatten() == Some("true".into()),
         storage,
         handler_registered: registered,
         handler_owner: (!registered).then(nxm_handler_owner).flatten(),
@@ -1057,30 +1105,421 @@ pub async fn nexus_download(url: String, app: tauri::AppHandle) -> Result<String
         (key, ctx.cache_dir.clone())
     };
     let info = crate::nexus::file_info(&api_key, &link).await?;
+    // Announce the file before the transfer starts. Resolving the link takes a
+    // moment, and until this arrives the interface has nothing to show but a
+    // spinner.
+    let announced_total = (info.size_bytes > 0).then_some(info.size_bytes);
+    let _ = app.emit(
+        "zcom://download-progress",
+        serde_json::json!({"name": info.name, "done": 0, "total": announced_total}),
+    );
     let source = crate::nexus::download_link(&api_key, &link).await?;
     let destination = cache_dir.join("downloads").join(&info.file_name);
     let emitter = app.clone();
     let name = info.name.clone();
+    // One event per chunk floods the webview on a large file and makes the
+    // window it is meant to keep responsive stutter instead.
+    let mut last = std::time::Instant::now();
     crate::nexus::download_to(&source, &destination, move |done, total| {
+        let complete = total.is_some_and(|total| done >= total);
+        if !complete && last.elapsed() < Duration::from_millis(100) {
+            return;
+        }
+        last = std::time::Instant::now();
         let _ = emitter.emit(
             "zcom://download-progress",
-            serde_json::json!({"name": name, "done": done, "total": total}),
+            serde_json::json!({"name": name, "done": done, "total": total.or(announced_total)}),
         );
     })
     .await?;
     let ctx = app.state::<AppContext>();
+    // Remember what this archive is, so the mod installed from it can be
+    // checked against Nexus later.
+    let path = destination.display().to_string();
+    if let Err(error) = database::open(&ctx.db_path).and_then(|conn| {
+        database::record_nexus_source(
+            &conn,
+            &path,
+            link.mod_id,
+            link.file_id,
+            info.version.as_deref(),
+            &info.file_name,
+        )
+    }) {
+        log(&ctx, "warn", "nexus_source_not_recorded", &error.to_string());
+    }
     log(
         &ctx,
         "info",
         "nexus_download",
         &format!("mod_id={} file_id={}", link.mod_id, link.file_id),
     );
-    Ok(destination.display().to_string())
+    Ok(path)
+}
+
+/// How long a stored result stands before an unforced check goes back to the
+/// network. Nexus rate-limits by the hour and mod files change rarely, so a
+/// start-up check that finds a recent result stays offline.
+const UPDATE_CHECK_INTERVAL_HOURS: i64 = 6;
+const LAST_CHECK_KEY: &str = "nexus_update_checked_at";
+
+/// Whether the stored result is recent enough to stand in for a fresh check.
+/// A timestamp that cannot be read is treated as no check at all.
+fn checked_recently(recorded: Option<String>) -> bool {
+    recorded
+        .and_then(|last| chrono::DateTime::parse_from_rfc3339(&last).ok())
+        .is_some_and(|last| {
+            chrono::Utc::now().signed_duration_since(last)
+                < chrono::Duration::hours(UPDATE_CHECK_INTERVAL_HOURS)
+        })
+}
+
+/// Builds the report from what is already recorded. No network access: an
+/// update is a stored newest-file id that is later than the installed one.
+fn update_report(
+    conn: &rusqlite::Connection,
+    from_cache: bool,
+    identified: usize,
+    problem: Option<String>,
+) -> Result<ModUpdateReport> {
+    let installs = database::nexus_installs(conn)?;
+    let latest = database::nexus_latest(conn)?;
+    let mut updates = Vec::new();
+    for install in &installs {
+        let Some(known) = latest.get(&install.nexus_mod_id) else {
+            continue;
+        };
+        if !crate::nexus::is_newer(known.latest_file_id, install.nexus_file_id) {
+            continue;
+        }
+        updates.push(ModUpdate {
+            mod_id: install.id.clone(),
+            name: install.name.clone(),
+            installed_version: install.version.clone(),
+            installed_file_id: install.nexus_file_id,
+            nexus_mod_id: install.nexus_mod_id,
+            latest_file_id: known.latest_file_id,
+            latest_version: known.latest_version.clone(),
+            latest_file_name: known.latest_file_name.clone(),
+            page_url: crate::nexus::mod_files_url(install.nexus_mod_id),
+            nxm_url: crate::nexus::nxm_url(install.nexus_mod_id, known.latest_file_id),
+            checked_at: known.checked_at.clone(),
+        });
+    }
+    Ok(ModUpdateReport {
+        updates,
+        tracked: installs.len(),
+        identified,
+        unmatched: database::untracked_installs(conn)?.len(),
+        ignored: database::ignored_count(conn)?,
+        checked_at: database::get_setting(conn, LAST_CHECK_KEY)?,
+        from_cache,
+        problem,
+    })
+}
+
+/// Matches installed mods to their Nexus page by the MD5 of the archive they
+/// were installed from.
+///
+/// This is what covers a library that existed before the manager recorded
+/// provenance, and anything installed from an archive downloaded in a browser.
+/// Only the uploaded archive is indexed by Nexus, so a mod whose archive has
+/// been deleted, or that never came from Nexus, stays unmatched. An archive
+/// Nexus does not recognise is remembered as such and is retried only when the
+/// user asks for a check themselves.
+async fn identify_untracked(
+    app: &AppHandle,
+    api_key: &str,
+    retry: bool,
+) -> Result<(usize, Option<String>)> {
+    let candidates: Vec<(String, PathBuf)> = {
+        let ctx = app.state::<AppContext>();
+        let conn = database::open(&ctx.db_path)?;
+        database::untracked_installs(&conn)?
+            .into_iter()
+            .filter(|install| retry || install.attempt.is_none())
+            .filter_map(|install| {
+                let archive = PathBuf::from(install.source_archive?);
+                archive.is_file().then_some((install.id, archive))
+            })
+            .collect()
+    };
+    let mut identified = 0;
+    for (mod_id, archive) in candidates {
+        // An unreadable archive is no worse than a missing one.
+        let Ok(md5) = md5_of(&archive) else { continue };
+        // A rate limit or a rejected key ends the pass; what was matched before
+        // it stands, and the caller reports why the rest was not attempted.
+        let found = match crate::nexus::md5_search(api_key, &md5).await {
+            Ok(found) => found,
+            Err(error) => return Ok((identified, Some(error.to_string()))),
+        };
+        let ctx = app.state::<AppContext>();
+        let conn = database::open(&ctx.db_path)?;
+        if let Some((nexus_mod_id, nexus_file_id)) = found {
+            database::set_nexus_ids(&conn, &mod_id, nexus_mod_id, nexus_file_id)?;
+            identified += 1;
+        }
+        database::record_identification(&conn, &mod_id, &md5, found.is_some())?;
+    }
+    Ok((identified, None))
+}
+
+/// Nexus indexes uploaded files by MD5, so that is the digest this needs. It is
+/// never used here to decide that a file is unchanged or trustworthy.
+fn md5_of(path: &Path) -> Result<String> {
+    use md5::{Digest, Md5};
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hash = Md5::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hash.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hash.finalize()))
+}
+
+/// Points an installed mod at a Nexus mod the user names, for a mod whose
+/// archive is gone or was never a Nexus download. The file recorded as
+/// installed is the one carrying the installed version, so an update is only
+/// reported when Nexus really has moved past it.
+#[tauri::command]
+pub async fn link_mod_to_nexus(
+    mod_id: String,
+    reference: String,
+    app: AppHandle,
+) -> Result<ModUpdateReport> {
+    let nexus_mod_id = crate::nexus::parse_mod_reference(&reference)?;
+    let (api_key, installed_version) = {
+        let ctx = app.state::<AppContext>();
+        let conn = database::open(&ctx.db_path)?;
+        let version = rusqlite::OptionalExtension::optional(conn.query_row(
+            "SELECT version FROM mods WHERE id=?1",
+            [&mod_id],
+            |row| row.get::<_, Option<String>>(0),
+        ))?
+        .ok_or_else(|| AppError::Other("That mod is no longer installed.".into()))?;
+        let key = crate::credentials::load(&conn).ok_or(AppError::NexusKeyMissing)?;
+        (key, version)
+    };
+    let files = crate::nexus::files(&api_key, nexus_mod_id).await?;
+    let file = crate::nexus::file_for_version(&files, installed_version.as_deref())
+        .ok_or_else(|| AppError::Other("That Nexus mod offers no files to match.".into()))?;
+    let latest = crate::nexus::newest_offered(&files).map(|newest| database::NexusLatest {
+        latest_file_id: newest.file_id,
+        latest_version: newest.version.clone(),
+        latest_file_name: newest.file_name.clone(),
+        checked_at: chrono::Utc::now().to_rfc3339(),
+    });
+    let ctx = app.state::<AppContext>();
+    let conn = database::open(&ctx.db_path)?;
+    // Naming a page is an instruction to check it, whatever was decided before.
+    database::set_nexus_checked(&conn, &mod_id, true)?;
+    database::set_nexus_ids(&conn, &mod_id, nexus_mod_id, file.file_id)?;
+    if let Some(latest) = latest {
+        database::record_nexus_latest(&conn, nexus_mod_id, &latest)?;
+    }
+    log(
+        &ctx,
+        "info",
+        "nexus_mod_linked",
+        &format!("mod_id={mod_id} nexus_mod_id={nexus_mod_id} file_id={}", file.file_id),
+    );
+    update_report(&conn, false, 0, None)
+}
+
+/// Takes a mod out of update checking, or puts it back.
+///
+/// This covers both halves of the same decision: a mod linked to the wrong page
+/// and a mod that never came from Nexus at all. Turning checking off drops the
+/// link and keeps the mod out of the identification lookup, so a check the user
+/// asks for does not quietly match and link it again.
+#[tauri::command]
+pub fn set_mod_checked(
+    mod_id: String,
+    checked: bool,
+    ctx: State<'_, AppContext>,
+) -> Result<ModUpdateReport> {
+    let conn = connection(&ctx)?;
+    database::set_nexus_checked(&conn, &mod_id, checked)?;
+    log(
+        &ctx,
+        "info",
+        if checked {
+            "nexus_checks_resumed"
+        } else {
+            "nexus_checks_stopped"
+        },
+        &format!("mod_id={mod_id}"),
+    );
+    update_report(&conn, true, 0, None)
+}
+
+/// Turns the start-up check on or off, on its own.
+///
+/// Every other control in the Nexus panel takes effect the moment it is used,
+/// so a checkbox that quietly needed **Save settings** as well read as one that
+/// did not work — and any refresh overwrote the pending toggle before it could
+/// be saved. Writing the single setting also avoids committing whatever else is
+/// half-edited on the Settings page.
+#[tauri::command]
+pub fn set_nexus_auto_check(enabled: bool, ctx: State<'_, AppContext>) -> Result<()> {
+    let conn = connection(&ctx)?;
+    database::set_setting(&conn, "nexus_auto_update_check", &enabled.to_string())?;
+    log(
+        &ctx,
+        "info",
+        "nexus_auto_check_changed",
+        &format!("enabled={enabled}"),
+    );
+    Ok(())
+}
+
+/// What the last check found. Read on every refresh so the library can show
+/// known updates without reaching Nexus.
+#[tauri::command]
+pub fn mod_updates(ctx: State<'_, AppContext>) -> Result<ModUpdateReport> {
+    update_report(&connection(&ctx)?, true, 0, None)
+}
+
+/// Asks Nexus which files each tracked mod now offers.
+///
+/// `force` is the Mods page button. Without it the stored result stands for
+/// `UPDATE_CHECK_INTERVAL`, which is what the opt-in start-up check relies on
+/// so a manager opened repeatedly does not spend the hourly API allowance.
+#[tauri::command]
+pub async fn check_mod_updates(force: bool, app: AppHandle) -> Result<ModUpdateReport> {
+    let api_key = {
+        let ctx = app.state::<AppContext>();
+        let conn = database::open(&ctx.db_path)?;
+        // Nothing installed at all, so there is neither anything to check nor
+        // anything to identify.
+        if database::nexus_installs(&conn)?.is_empty()
+            && database::untracked_installs(&conn)?.is_empty()
+        {
+            return update_report(&conn, true, 0, None);
+        }
+        if !force && checked_recently(database::get_setting(&conn, LAST_CHECK_KEY)?) {
+            return update_report(&conn, true, 0, None);
+        }
+        let Some(api_key) = crate::credentials::load(&conn) else {
+            if force {
+                return Err(AppError::NexusKeyMissing);
+            }
+            return update_report(
+                &conn,
+                true,
+                0,
+                Some("No Nexus Mods API key is stored, so installed mods were not checked.".into()),
+            );
+        };
+        api_key
+    };
+
+    // A forced check is also the moment to confirm the stored key still works
+    // and whether the account is premium, which is what decides if a direct
+    // download can be offered instead of a trip to the website.
+    let account = match force {
+        true => crate::nexus::validate(&api_key).await.ok(),
+        false => None,
+    };
+    // Mods with no provenance are matched by their archive first, so anything
+    // recognised here is checked in this same pass. An archive Nexus has
+    // already refused is offered again only when the user asked for the check.
+    let (identified, mut problem) = identify_untracked(&app, &api_key, force).await?;
+    let targets = {
+        let ctx = app.state::<AppContext>();
+        let conn = database::open(&ctx.db_path)?;
+        let mut targets: Vec<u64> = database::nexus_installs(&conn)?
+            .iter()
+            .map(|install| install.nexus_mod_id)
+            .collect();
+        targets.sort_unstable();
+        // One request per Nexus mod, however many local mods came out of it.
+        targets.dedup();
+        targets
+    };
+    let mut found: Vec<(u64, database::NexusLatest)> = Vec::new();
+    let mut failed = 0usize;
+    for nexus_mod_id in targets.iter().take_while(|_| problem.is_none()) {
+        match crate::nexus::files(&api_key, *nexus_mod_id).await {
+            Ok(files) => {
+                if let Some(file) = crate::nexus::newest_offered(&files) {
+                    found.push((
+                        *nexus_mod_id,
+                        database::NexusLatest {
+                            latest_file_id: file.file_id,
+                            latest_version: file.version.clone(),
+                            latest_file_name: file.file_name.clone(),
+                            checked_at: String::new(),
+                        },
+                    ));
+                }
+            }
+            // Stopping on a rate limit or a rejected key keeps the remaining
+            // requests from making either worse; what was already read stands.
+            Err(error @ (AppError::NexusRateLimited | AppError::NexusUnauthorized)) => {
+                problem = Some(error.to_string());
+                break;
+            }
+            // A single mod can be hidden, deleted, or moderated. That is not a
+            // reason to abandon the rest of the library.
+            Err(_) => failed += 1,
+        }
+    }
+    if problem.is_none() && failed > 0 {
+        problem = Some(format!(
+            "{failed} of {} mods could not be read on Nexus Mods. They may have been hidden or removed.",
+            targets.len()
+        ));
+    }
+
+    let ctx = app.state::<AppContext>();
+    let conn = database::open(&ctx.db_path)?;
+    let now = chrono::Utc::now().to_rfc3339();
+    if let Some(account) = account {
+        database::set_setting(&conn, "nexus_account_name", &account.name)?;
+        database::set_setting(&conn, "nexus_premium", &account.premium.to_string())?;
+    }
+    for (nexus_mod_id, latest) in &found {
+        database::record_nexus_latest(
+            &conn,
+            *nexus_mod_id,
+            &database::NexusLatest {
+                checked_at: now.clone(),
+                ..latest.clone()
+            },
+        )?;
+    }
+    // Only a complete pass advances the throttle, so a run cut short by a rate
+    // limit is retried on the next opportunity rather than waiting it out.
+    if problem.is_none() {
+        database::set_setting(&conn, LAST_CHECK_KEY, &now)?;
+    }
+    let report = update_report(&conn, false, identified, problem)?;
+    log(
+        &ctx,
+        "info",
+        "nexus_update_check",
+        &format!(
+            "checked={} identified={} tracked={} unmatched={} updates={}",
+            found.len(),
+            identified,
+            report.tracked,
+            report.unmatched,
+            report.updates.len()
+        ),
+    );
+    Ok(report)
 }
 
 #[cfg(test)]
 mod update_tests {
-    use super::{configured_executable, replaced_by, version_is_newer};
+    use super::{checked_recently, configured_executable, replaced_by, update_report, version_is_newer};
     use crate::{
         database,
         models::{AppSettings, PayloadFile, StagedMod},
@@ -1094,6 +1533,198 @@ mod update_tests {
         assert!(version_is_newer("0.1.10", "0.1.9"));
         assert!(!version_is_newer("v0.1.4", "0.1.4"));
         assert!(!version_is_newer("0.1.3", "0.1.4"));
+    }
+
+    /// An installed mod that arrived through the handoff, recorded the way the
+    /// download and installation commands record one between them.
+    fn installed_from_nexus(
+        conn: &rusqlite::Connection,
+        id: &str,
+        archive: &str,
+        nexus_mod_id: u64,
+        file_id: u64,
+    ) {
+        conn.execute(
+            "INSERT INTO mods(id,name,version,mod_type,deployment_key,source_archive,installed_at,enabled,load_priority) \
+             VALUES(?1,?1,'1.0','iostore','',?2,'now',1,1)",
+            rusqlite::params![id, archive],
+        )
+        .unwrap();
+        database::record_nexus_source(conn, archive, nexus_mod_id, file_id, Some("1.0"), "mod.zip")
+            .unwrap();
+        assert!(database::link_nexus_source(conn, id, archive).unwrap());
+    }
+
+    fn latest(file_id: u64, version: &str) -> database::NexusLatest {
+        database::NexusLatest {
+            latest_file_id: file_id,
+            latest_version: Some(version.into()),
+            latest_file_name: format!("mod-{version}.zip"),
+            checked_at: "2026-09-01T00:00:00+00:00".into(),
+        }
+    }
+
+    #[test]
+    fn an_archive_the_user_picked_by_hand_carries_no_provenance() {
+        let directory = tempdir().unwrap();
+        let conn = database::open(&directory.path().join("db.sqlite3")).unwrap();
+        conn.execute(
+            "INSERT INTO mods(id,name,version,mod_type,deployment_key,source_archive,installed_at,enabled,load_priority) \
+             VALUES('local','Local','1.0','iostore','','/home/user/mod.zip','now',1,1)",
+            [],
+        )
+        .unwrap();
+        assert!(!database::link_nexus_source(&conn, "local", "/home/user/mod.zip").unwrap());
+        assert!(database::nexus_installs(&conn).unwrap().is_empty());
+        let report = update_report(&conn, true, 0, None).unwrap();
+        assert_eq!((report.tracked, report.updates.len()), (0, 0));
+    }
+
+    #[test]
+    fn only_a_later_file_than_the_installed_one_is_an_update() {
+        let directory = tempdir().unwrap();
+        let conn = database::open(&directory.path().join("db.sqlite3")).unwrap();
+        installed_from_nexus(&conn, "unlocked", "/cache/unlocked.zip", 34, 200);
+        // The same file that is installed, and an older one, are not updates.
+        for known in [latest(200, "1.3"), latest(180, "1.2")] {
+            database::record_nexus_latest(&conn, 34, &known).unwrap();
+            assert!(update_report(&conn, true, 0, None).unwrap().updates.is_empty());
+        }
+        database::record_nexus_latest(&conn, 34, &latest(260, "1.4")).unwrap();
+        let report = update_report(&conn, true, 0, None).unwrap();
+        assert_eq!(report.tracked, 1);
+        let update = &report.updates[0];
+        assert_eq!(update.mod_id, "unlocked");
+        assert_eq!(update.latest_version.as_deref(), Some("1.4"));
+        // The link has to be one this manager would accept back from a browser.
+        assert_eq!(
+            crate::nexus::parse_nxm(&update.nxm_url).unwrap().file_id,
+            260
+        );
+    }
+
+    #[test]
+    fn every_mod_from_one_nexus_page_is_reported() {
+        let directory = tempdir().unwrap();
+        let conn = database::open(&directory.path().join("db.sqlite3")).unwrap();
+        // A single archive can install several mods, and each keeps the
+        // provenance of the file it came from.
+        installed_from_nexus(&conn, "core", "/cache/suite.zip", 9, 100);
+        installed_from_nexus(&conn, "extras", "/cache/suite.zip", 9, 100);
+        database::record_nexus_latest(&conn, 9, &latest(150, "2.0")).unwrap();
+        let report = update_report(&conn, true, 0, None).unwrap();
+        assert_eq!(report.updates.len(), 2);
+        assert_eq!(report.tracked, 2);
+    }
+
+    #[test]
+    fn a_library_installed_before_provenance_existed_is_offered_for_identification() {
+        let directory = tempdir().unwrap();
+        let conn = database::open(&directory.path().join("db.sqlite3")).unwrap();
+        // Installed from an archive the user still has, from one that is gone,
+        // and adopted from disk with no archive at all.
+        for (id, archive) in [
+            ("kept", "/downloads/kept.zip"),
+            ("gone", "/downloads/gone.zip"),
+            ("adopted", ""),
+        ] {
+            conn.execute(
+                "INSERT INTO mods(id,name,version,mod_type,deployment_key,source_archive,installed_at,enabled,load_priority) \
+                 VALUES(?1,?1,'1.0','iostore','',?2,'now',1,1)",
+                rusqlite::params![id, archive],
+            )
+            .unwrap();
+        }
+        let untracked = database::untracked_installs(&conn).unwrap();
+        assert_eq!(untracked.len(), 3);
+        // An adopted mod has no archive to offer, so it can only be linked by
+        // hand; the other two are candidates for an MD5 lookup.
+        let adopted = untracked.iter().find(|i| i.id == "adopted").unwrap();
+        assert!(adopted.source_archive.is_none());
+        assert!(untracked.iter().all(|install| install.attempt.is_none()));
+
+        // A refusal is remembered so an automatic check does not ask again.
+        database::record_identification(&conn, "gone", "d41d8cd98f00b204e9800998ecf8427e", false)
+            .unwrap();
+        let untracked = database::untracked_installs(&conn).unwrap();
+        let gone = untracked.iter().find(|i| i.id == "gone").unwrap();
+        assert!(!gone.attempt.as_ref().unwrap().1);
+
+        // A match takes the mod out of the untracked list and into the checked
+        // one, without any download having happened.
+        database::set_nexus_ids(&conn, "kept", 34, 260).unwrap();
+        database::record_identification(&conn, "kept", "0123456789abcdef0123456789abcdef", true)
+            .unwrap();
+        assert_eq!(database::untracked_installs(&conn).unwrap().len(), 2);
+        let installs = database::nexus_installs(&conn).unwrap();
+        assert_eq!(installs.len(), 1);
+        assert_eq!(installs[0].nexus_file_id, 260);
+        let report = update_report(&conn, true, 1, None).unwrap();
+        assert_eq!(
+            (report.tracked, report.identified, report.unmatched, report.ignored),
+            (1, 1, 2, 0)
+        );
+    }
+
+    #[test]
+    fn stopping_checks_on_a_linked_mod_keeps_it_from_being_relinked() {
+        let directory = tempdir().unwrap();
+        let conn = database::open(&directory.path().join("db.sqlite3")).unwrap();
+        installed_from_nexus(&conn, "unlocked", "/cache/unlocked.zip", 34, 200);
+        database::record_identification(&conn, "unlocked", "0123456789abcdef0123456789abcdef", true)
+            .unwrap();
+        database::record_nexus_latest(&conn, 34, &latest(260, "1.4")).unwrap();
+        assert_eq!(update_report(&conn, true, 0, None).unwrap().updates.len(), 1);
+
+        database::set_nexus_checked(&conn, "unlocked", false).unwrap();
+        let report = update_report(&conn, true, 0, None).unwrap();
+        assert_eq!((report.tracked, report.updates.len()), (0, 0));
+        // Out of checking is also out of identification: the archive is still
+        // on disk, and a check the user asks for must not match it and link it
+        // again behind their back.
+        assert!(database::untracked_installs(&conn).unwrap().is_empty());
+        assert_eq!((report.unmatched, report.ignored), (0, 1));
+
+        // Turning it back on offers the archive to Nexus once more.
+        database::set_nexus_checked(&conn, "unlocked", true).unwrap();
+        let untracked = database::untracked_installs(&conn).unwrap();
+        assert_eq!(untracked.len(), 1);
+        assert!(untracked[0].attempt.is_none());
+        assert_eq!(update_report(&conn, true, 0, None).unwrap().ignored, 0);
+    }
+
+    #[test]
+    fn a_mod_that_never_came_from_nexus_can_be_left_out_for_good() {
+        let directory = tempdir().unwrap();
+        let conn = database::open(&directory.path().join("db.sqlite3")).unwrap();
+        conn.execute(
+            "INSERT INTO mods(id,name,version,mod_type,deployment_key,source_archive,installed_at,enabled,load_priority) \
+             VALUES('mine','My own mod','1.0','iostore','','/home/user/dist/mine.zip','now',1,1)",
+            [],
+        )
+        .unwrap();
+        // Until it is excluded it is a candidate on every check the user asks
+        // for, which is a request per check for a mod Nexus will never know.
+        assert_eq!(database::untracked_installs(&conn).unwrap().len(), 1);
+
+        database::set_nexus_checked(&conn, "mine", false).unwrap();
+        assert!(database::untracked_installs(&conn).unwrap().is_empty());
+        let report = update_report(&conn, true, 0, None).unwrap();
+        assert_eq!((report.tracked, report.unmatched, report.ignored), (0, 0, 1));
+    }
+
+    #[test]
+    fn a_recent_result_stands_and_an_unreadable_one_does_not() {
+        let now = chrono::Utc::now();
+        assert!(checked_recently(Some(now.to_rfc3339())));
+        assert!(checked_recently(Some(
+            (now - chrono::Duration::hours(5)).to_rfc3339()
+        )));
+        assert!(!checked_recently(Some(
+            (now - chrono::Duration::hours(7)).to_rfc3339()
+        )));
+        assert!(!checked_recently(Some("not a timestamp".into())));
+        assert!(!checked_recently(None));
     }
 
     #[test]

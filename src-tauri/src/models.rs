@@ -96,6 +96,18 @@ pub struct ModSummary {
     pub conflict_count: usize,
     pub potential_conflict_count: usize,
     pub load_priority: Option<i64>,
+    /// The Nexus mod this was installed from, when it is known. Only a mod with
+    /// one can be checked for updates.
+    pub nexus_mod_id: Option<u64>,
+    /// That mod's page, so the interface can offer to open it without knowing
+    /// how a Nexus address is put together.
+    pub nexus_url: Option<String>,
+    /// Taken out of update checking by the user. Neither checked nor offered to
+    /// the identification lookup again.
+    pub nexus_ignored: bool,
+    /// Kept out of the library list. Still installed, still deployed, and still
+    /// ordered — only hidden from view.
+    pub hidden: bool,
     pub files: Vec<ModFile>,
 }
 
@@ -346,6 +358,9 @@ pub struct AppSettings {
     pub log_level: String,
     pub advanced_package_names: bool,
     pub reduced_motion: bool,
+    /// Whether one throttled update check may run on start-up. Off by default:
+    /// the manager reaches Nexus only when the user has asked it to.
+    pub nexus_auto_update_check: bool,
 }
 
 impl Default for AppSettings {
@@ -357,8 +372,51 @@ impl Default for AppSettings {
             log_level: "normal".into(),
             advanced_package_names: false,
             reduced_motion: false,
+            nexus_auto_update_check: false,
         }
     }
+}
+
+/// An installed mod that Nexus Mods now offers a newer file for.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModUpdate {
+    /// The installed mod, not the Nexus mod.
+    pub mod_id: String,
+    pub name: String,
+    pub installed_version: Option<String>,
+    pub installed_file_id: u64,
+    pub nexus_mod_id: u64,
+    pub latest_file_id: u64,
+    pub latest_version: Option<String>,
+    pub latest_file_name: String,
+    /// The mod's files tab, where the download has to start for a free account.
+    pub page_url: String,
+    /// The link the website would hand over. A premium key can resolve it
+    /// without the website, so the interface offers that as a direct download.
+    pub nxm_url: String,
+    pub checked_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModUpdateReport {
+    pub updates: Vec<ModUpdate>,
+    /// Installed mods that carry Nexus provenance and can be checked at all.
+    pub tracked: usize,
+    /// When the newest of the stored results was taken, if anything is stored.
+    pub checked_at: Option<String>,
+    /// True when nothing was fetched and the report is the stored result.
+    pub from_cache: bool,
+    /// Mods matched to a Nexus page by their archive during this check.
+    pub identified: usize,
+    /// Installed mods that could not be matched, and so are not checked. Either
+    /// they did not come from Nexus or the archive they came from is gone.
+    pub unmatched: usize,
+    /// Mods the user has taken out of checking, which are never looked up.
+    pub ignored: usize,
+    /// Why the check was incomplete, when it was.
+    pub problem: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

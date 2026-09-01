@@ -32,6 +32,10 @@ export interface NexusAccount {
 
 export interface NexusStatus {
   hasKey: boolean;
+  /** Who the stored key belongs to, remembered from when it was verified. */
+  accountName: string | null;
+  /** Only a premium account can resolve a download link without the website. */
+  premium: boolean;
   /** Where the key is held. "database" means plain text, and is surfaced to the user. */
   storage: "keyring" | "database" | null;
   handlerRegistered: boolean;
@@ -39,6 +43,39 @@ export interface NexusStatus {
   handlerOwner: string | null;
   /** Why registration cannot take effect on this system, if it cannot. */
   handlerProblem: string | null;
+}
+
+export interface ModUpdate {
+  /** The installed mod, not the Nexus mod. */
+  modId: string;
+  name: string;
+  installedVersion: string | null;
+  installedFileId: number;
+  nexusModId: number;
+  latestFileId: number;
+  latestVersion: string | null;
+  latestFileName: string;
+  /** The mod's files tab, where a free account has to start the download. */
+  pageUrl: string;
+  /** The link the website would hand over; a premium key resolves it directly. */
+  nxmUrl: string;
+  checkedAt: string;
+}
+
+export interface ModUpdateReport {
+  updates: ModUpdate[];
+  /** Installed mods that carry Nexus provenance and can be checked at all. */
+  tracked: number;
+  checkedAt: string | null;
+  /** Mods matched to a Nexus page by their archive during this check. */
+  identified: number;
+  /** Installed mods that could not be matched, and so are not checked. */
+  unmatched: number;
+  /** Mods the user has taken out of checking, which are never looked up. */
+  ignored: number;
+  /** True when nothing was fetched and this is the stored result. */
+  fromCache: boolean;
+  problem: string | null;
 }
 
 export interface DownloadProgress {
@@ -50,6 +87,8 @@ export interface DownloadProgress {
 export interface Links {
   ue4ssDownload: string;
   nexusGame: string;
+  /** The manager's own Nexus Mods page, where a release lands as well. */
+  nexusManager: string;
   project: string;
 }
 
@@ -95,6 +134,14 @@ export interface ModSummary {
   conflictCount: number;
   potentialConflictCount: number;
   loadPriority: number | null;
+  /** The Nexus mod this came from, when known. Only these are update-checked. */
+  nexusModId: number | null;
+  /** That mod's page on Nexus, when it is linked to one. */
+  nexusUrl: string | null;
+  /** Taken out of update checking by the user, and never looked up again. */
+  nexusIgnored: boolean;
+  /** Kept out of the library list. Still installed, deployed, and ordered. */
+  hidden: boolean;
   files: ModFile[];
 }
 
@@ -259,6 +306,8 @@ export interface AppSettings {
   logLevel: "normal" | "verbose" | "developer";
   advancedPackageNames: boolean;
   reducedMotion: boolean;
+  /** Allows one throttled Nexus update check on start-up. Off by default. */
+  nexusAutoUpdateCheck: boolean;
 }
 
 export interface LaunchReport {

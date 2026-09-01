@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AdoptionGroup, AdoptionReport, AppSettings, Dashboard, DiagnosticReport, ExistingModScan, LaunchReport, Links, LoadOrderPreview, LoadOrderState, ModPreview, ModSummary, NexusAccount, NexusStatus, Ue4ssInstallReport, UpdateInfo } from "../types";
+import type { AdoptionGroup, AdoptionReport, AppSettings, Dashboard, DiagnosticReport, ExistingModScan, LaunchReport, Links, LoadOrderPreview, LoadOrderState, ModPreview, ModSummary, ModUpdateReport, NexusAccount, NexusStatus, Ue4ssInstallReport, UpdateInfo } from "../types";
 
 export const backend = {
   dashboard: () => invoke<Dashboard>("get_dashboard"),
@@ -16,6 +16,7 @@ export const backend = {
   discardPreviews: (stagingIds: string[]) => invoke<void>("discard_previews", { stagingIds }),
   rename: (id: string, name: string) => invoke<void>("rename_mod", { id, name }),
   setEnabled: (id: string, enabled: boolean) => invoke<void>("set_mod_enabled", { id, enabled }),
+  setHidden: (id: string, hidden: boolean) => invoke<void>("set_mod_hidden", { id, hidden }),
   uninstall: (id: string, force = false) => invoke<void>("uninstall_mod", { id, force }),
   verify: (id: string) => invoke<string>("verify_mod", { id }),
   installUe4ss: (path: string) => invoke<Ue4ssInstallReport>("install_ue4ss", { path }),
@@ -26,6 +27,11 @@ export const backend = {
   clearNexusKey: () => invoke<void>("clear_nexus_key"),
   setNxmHandler: (enabled: boolean) => invoke<NexusStatus>("set_nxm_handler", { enabled }),
   nexusDownload: (url: string) => invoke<string>("nexus_download", { url }),
+  modUpdates: () => invoke<ModUpdateReport>("mod_updates"),
+  checkModUpdates: (force: boolean) => invoke<ModUpdateReport>("check_mod_updates", { force }),
+  setNexusAutoCheck: (enabled: boolean) => invoke<void>("set_nexus_auto_check", { enabled }),
+  linkModToNexus: (modId: string, reference: string) => invoke<ModUpdateReport>("link_mod_to_nexus", { modId, reference }),
+  setModChecked: (modId: string, checked: boolean) => invoke<ModUpdateReport>("set_mod_checked", { modId, checked }),
   takePendingNxm: () => invoke<string | null>("take_pending_nxm"),
   diagnostics: () => invoke<DiagnosticReport>("run_diagnostics"),
   settings: () => invoke<AppSettings>("get_settings"),

@@ -11,6 +11,7 @@ describe("About update status", () => {
     const onOpenLink = vi.fn();
     render(<AboutPage
       projectUrl="https://github.com/arctco/zcom-mod-manager"
+      nexusUrl="https://www.nexusmods.com/starwarszerocompany/mods/29"
       onOpenLink={onOpenLink}
       update={{
         currentVersion: "0.2.0",
@@ -32,6 +33,7 @@ describe("About update status", () => {
     const onCheckUpdates = vi.fn();
     render(<AboutPage
       projectUrl="https://github.com/arctco/zcom-mod-manager"
+      nexusUrl="https://www.nexusmods.com/starwarszerocompany/mods/29"
       onOpenLink={vi.fn()}
       update={null}
       checking={false}
@@ -42,5 +44,44 @@ describe("About update status", () => {
     expect(screen.getByText(/Couldn’t check GitHub: Network unavailable/)).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "Check again" }));
     expect(onCheckUpdates).toHaveBeenCalledOnce();
+  });
+});
+
+describe("where an update can be taken from", () => {
+  it("offers the Nexus Mods page beside the GitHub release", async () => {
+    const onOpenLink = vi.fn();
+    render(<AboutPage
+      projectUrl="https://github.com/arctco/zcom-mod-manager"
+      nexusUrl="https://www.nexusmods.com/starwarszerocompany/mods/29"
+      onOpenLink={onOpenLink}
+      update={{
+        currentVersion: "0.4.1",
+        latestVersion: "0.5.0",
+        releaseUrl: "https://github.com/arctco/zcom-mod-manager/releases/tag/v0.5.0",
+        updateAvailable: true
+      }}
+      checking={false}
+      error={null}
+      onCheckUpdates={vi.fn()}
+    />);
+
+    await userEvent.click(screen.getByRole("button", { name: /get it on nexus mods/i }));
+    expect(onOpenLink).toHaveBeenCalledWith("https://www.nexusmods.com/starwarszerocompany/mods/29");
+  });
+
+  it("keeps the page reachable when no update is waiting", async () => {
+    const onOpenLink = vi.fn();
+    render(<AboutPage
+      projectUrl="https://github.com/arctco/zcom-mod-manager"
+      nexusUrl="https://www.nexusmods.com/starwarszerocompany/mods/29"
+      onOpenLink={onOpenLink}
+      update={{ currentVersion: "0.4.1", latestVersion: "0.4.1", releaseUrl: "", updateAvailable: false }}
+      checking={false}
+      error={null}
+      onCheckUpdates={vi.fn()}
+    />);
+
+    await userEvent.click(screen.getByRole("button", { name: /nexus mods page/i }));
+    expect(onOpenLink).toHaveBeenCalledWith("https://www.nexusmods.com/starwarszerocompany/mods/29");
   });
 });

@@ -1,4 +1,4 @@
-# Known Limitations — 0.4.1
+# Known Limitations — 0.5.0
 
 - 7z installation uses the open-source 7-Zip command-line program available on
   the host. ZIP support is built in. A missing `7z` produces setup guidance.
@@ -53,8 +53,44 @@
 - PAK-only mods remain visible but non-orderable: the local capability fixture
   did not pass the runtime gate. Their contents are also opaque, so the manager
   cannot identify which assets a PAK-only mod wins or loses.
+- Hiding a mod affects the library list only. A hidden mod is still installed,
+  still deployed, still counted on Home, and still listed in the load-order and
+  UE4SS start-order editors, because it still loads and its position still
+  matters.
+- Removing or disabling a mod prunes the empty folders its own payload created,
+  but only below that mod type's deployment base and only while they are empty.
+  A folder still holding a settings file, a log, or anything else the manager
+  does not own is kept, and a game-folder mod is never pruned because its base
+  is the game installation itself.
 - Full profiles remain future work.
-- Installed mods are not checked against Nexus for newer versions yet.
+- Update checking needs a mod to be matched to its Nexus page. A download
+  through the `nxm://` handoff records that outright. Anything else is matched
+  by offering the MD5 of the archive it was installed from, which only works
+  while that archive is still on disk and only for a file that was actually
+  uploaded to Nexus. A mod adopted from disk, installed from an archive that has
+  since been deleted, or built from source is never matched automatically and
+  has to be linked by hand from More details, or it is not checked.
+- An update is the newest file Nexus still offers under `MAIN` or `UPDATE`, and
+  newer means a higher file id, which Nexus issues in upload order. A mod that
+  publishes its releases under another category is compared against its newest
+  offered file instead; an author who re-uploads an old build under a new file
+  id is reported as an update.
+- The update check reports that a newer file exists. It never downloads or
+  installs one on its own, and a free Nexus account has to start the download
+  on the website because the API will not mint a download link without the
+  website's key.
+- Linking a mod by hand trusts the address given. The file recorded as installed
+  is the one whose version string matches the installed version, and the newest
+  offered file when no version matches, so a mod whose version was never
+  recorded is linked to the current file and reports an update only from the
+  next release onward.
+- An update check is a request per Nexus mod, plus one per unmatched archive
+  that has not been excluded, so a large library spends the hourly API allowance
+  quickly. A mod that is not published on Nexus is worth taking out of checking
+  from More details, because its archive is otherwise offered again on every
+  check the user asks for. The result stands
+  for six hours before an automatic check goes back to the network; the Mods
+  page button always does.
 - Downloads must be started from the Nexus Mods website. A non-premium account
   cannot obtain a download link from the API without the website-minted key, so
   no in-application browsing or search is offered.

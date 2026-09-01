@@ -28,16 +28,19 @@ records SHA-256 ownership, and treats Linux/Proton as a first-class platform.
 - Existing-mod discovery and non-destructive adoption for packaged, UE4SS, and
   additive `LogicMods` installations
 - Manager-owned source library plus checksum-guarded deployment records
-- Enable, disable, verify, and safe uninstall operations
+- Enable, disable, hide, verify, and safe uninstall operations
 - Filename and hashed IoStore package conflict detection
 - Conflict-aware packaged-mod load order with preview and rollback
 - Optional spoiler-sensitive package paths, disabled by default
 - UE4SS layout checks and formatting-preserving `mods.txt` updates
 - Guided UE4SS runtime installation from a package you downloaded yourself
 - Opt-in Nexus Mods `nxm://` download handoff with protected API-key storage
+- On-demand update checking, with MD5 identification for mods installed before
+  the manager tracked provenance and an opt-in throttled check at start-up
 - Linux compatdata and Proton DLL-override diagnostics
 - Sanitized structured logs and a copyable Mod Doctor report
-- Automatic GitHub release notices with a manual retry on the About page
+- Automatic release notices with a manual retry on the About page, offering the
+  GitHub release and the manager's own Nexus Mods page alike
 - No account or always-on network requirement, telemetry, analytics, or advertisements
 
 ## Screenshots
@@ -356,6 +359,46 @@ download on its own. Downloads begin where they are meant to: on the website.
 
 A link for any other game is refused rather than downloaded.
 
+### Update checking
+
+A download through the handoff records which Nexus mod and file it came from,
+and installation attaches that to the mod. **Check for updates** on the Mods
+page then asks Nexus what each of those mods now offers, and marks the ones with
+a newer file.
+
+A library installed before any of that is not left out. The same check offers
+the MD5 of each unmatched mod's archive to Nexus, which recognises the file it
+was uploaded as and identifies the mod and file exactly — no download and no
+guessing from names. An archive Nexus does not recognise is remembered, so an
+automatic check does not ask about it again.
+
+A mod whose archive is gone, or that was adopted from the game folder and never
+had one, can be pointed at its Nexus page by hand: open **More details** and
+paste the mod's address. The file recorded as installed is the one carrying the
+installed version, so linking never invents an update.
+
+A linked mod can be opened on Nexus from its row in the library or from **More
+details**, so its description, changelog, and comments are one click away.
+
+**More details** is also where a mod leaves checking for good. That matters for
+anything not published on Nexus — a mod you built yourself, or one from
+elsewhere — because its archive is otherwise offered to the lookup on every
+check you ask for. An excluded mod is left out of the checks and the lookup
+alike, and **Check this mod again** puts it back.
+
+An update is the newest file still offered under `MAIN` or `UPDATE`. Superseded,
+archived, and deleted files are ignored, an optional extra is never treated as
+an upgrade, and newer is decided by file id, which Nexus issues in upload order.
+
+A premium account can fetch the update from the Mods page; it lands in the same
+review screen and replaces the installed mod through the same path a website
+handoff uses. A free account is sent to the mod's files tab, because only the
+website can mint the key the download link needs.
+
+Nothing is checked unless you ask. **Settings → Nexus Mods downloads** offers an
+opt-in start-up check, off by default, and its result stands for six hours so
+reopening the manager does not spend your API allowance.
+
 If another mod manager already holds `nxm://`, Settings names it rather than
 failing silently, and the switch takes the association over. Turning the switch
 off hands it back.
@@ -497,8 +540,8 @@ Confirm checksums after the run finishes. See
 
 - **0.2:** conflict-aware packaged-mod load order, Steam launch, and automatic
   manager release notices shipped; profiles and dependency metadata remain
-- **0.3:** Nexus handoff shipped; Nexus catalog browsing and per-mod update
-  checking still remain
+- **0.3:** Nexus handoff shipped; per-mod update checking has since shipped
+  too, and Nexus catalog browsing remains out of scope
 - **0.4:** existing-mod migration, bundled packaged-variant selection, and a
   custom game executable shipped
 - **Future / separate project:** ZCOM Mod Studio for asset inspection and authoring

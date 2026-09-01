@@ -1,6 +1,7 @@
 import { AlertTriangle, Archive, ArrowUpCircle, Check, ChevronRight, Download, FileArchive, FolderOpen, Pencil, ShieldCheck, X } from "lucide-react";
 import { StatusBadge } from "../components/StatusBadge";
 import type { DownloadProgress, ModPreview, PreviewType } from "../types";
+import { formatBytes } from "../utils/format";
 
 const typeLabel: Record<PreviewType, string> = {
   iostore: "IoStore packaged mod",
@@ -92,14 +93,28 @@ export function InstallPage({ previews, names, loading, download, advanced, inst
   return <div className="page install-page">
     <header className="page-header"><div><p className="eyebrow">SAFE INSTALLER</p><h1>{previews.length ? "Review mod" : "Install a mod"}</h1><p className="muted">Nothing is deployed until validation succeeds and you confirm.</p></div>{previews.length > 0 && <button onClick={onCancel}><X size={17} />{many ? "Cancel all" : "Cancel"}</button>}</header>
     {previews.length === 0
-      ? <section className={`drop-zone ${loading ? "loading" : ""}`} aria-busy={loading}>
-        <div className="drop-icon"><Archive aria-hidden size={32} /></div>
-        <h2>{loading ? "Inspecting payload…" : "Drop a mod here"}</h2>
-        <p>ZIP, 7z, PAK, UTOC/UCAS, a UE4SS Lua or DLL mod, or a game-folder mod</p>
-        {download && <p className="download-line">{download.name} · {Math.round(download.done / 1024 / 1024)} MB{download.total ? ` of ${Math.round(download.total / 1024 / 1024)} MB` : ""}</p>}
-        <div><button className="primary" onClick={onChooseFile} disabled={loading}><FileArchive size={18} />Choose archive or file</button><button onClick={onChooseFolder} disabled={loading}><FolderOpen size={18} />Choose folder</button></div>
-        <small>Archives are treated as untrusted input and extracted into a temporary sandbox.</small>
-      </section>
+      ? download
+        // A handoff from the website: the transfer is the whole screen until
+        // there is a payload to review, so it is never a silent wait.
+        ? <section className="drop-zone downloading" aria-busy>
+          <div className="drop-icon"><Download aria-hidden size={32} /></div>
+          <h2>{download.name ? "Downloading from Nexus Mods" : "Contacting Nexus Mods…"}</h2>
+          <p>{download.name || "Resolving the download link for this file."}</p>
+          <div className="download-progress" role="progressbar" aria-label="Download progress" aria-valuemin={0} aria-valuemax={download.total ?? undefined} aria-valuenow={download.total ? download.done : undefined}>
+            <div className={`download-bar ${download.total ? "" : "indeterminate"}`} style={download.total ? { width: `${Math.min(100, Math.round((download.done / download.total) * 100))}%` } : undefined} />
+          </div>
+          <p className="download-line">{download.total
+            ? `${formatBytes(download.done)} of ${formatBytes(download.total)} · ${Math.min(100, Math.round((download.done / download.total) * 100))}%`
+            : download.done > 0 ? formatBytes(download.done) : "Starting…"}</p>
+          <small>The file is inspected and confirmed before anything is installed.</small>
+        </section>
+        : <section className={`drop-zone ${loading ? "loading" : ""}`} aria-busy={loading}>
+          <div className="drop-icon"><Archive aria-hidden size={32} /></div>
+          <h2>{loading ? "Inspecting payload…" : "Drop a mod here"}</h2>
+          <p>ZIP, 7z, PAK, UTOC/UCAS, a UE4SS Lua or DLL mod, or a game-folder mod</p>
+          <div><button className="primary" onClick={onChooseFile} disabled={loading}><FileArchive size={18} />Choose archive or file</button><button onClick={onChooseFolder} disabled={loading}><FolderOpen size={18} />Choose folder</button></div>
+          <small>Archives are treated as untrusted input and extracted into a temporary sandbox.</small>
+        </section>
       : <div className="preview-grid">
         <div className="preview-stack">
           {many && <div className="inline-note" role="status"><b>{optionCount ? `${optionCount} packaged options${additionalCount ? ` and ${additionalCount} additional mod${additionalCount === 1 ? "" : "s"}` : ""} found` : `${previews.length} components found in this download`}</b><span>{optionCount ? "Each containing folder is a separate version or component. Install only the option or options you want; alternatives may conflict if installed together." : "Review every component below. You can install the complete bundle at once or install components separately."}</span>{canInstallAll && <button className="primary" onClick={() => onInstallAll(previews)} disabled={installing !== null}><ShieldCheck size={17} />{installing === "all" ? "Installing bundle…" : previews.some(preview => preview.replaces) ? "Update all components" : "Install all components"}</button>}</div>}

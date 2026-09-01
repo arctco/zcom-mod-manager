@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ConflictGroup, LoadOrderEntry, LoadOrderPreview, LoadOrderState, ModSummary } from "../types";
+import type { ConflictGroup, LoadOrderEntry, LoadOrderPreview, LoadOrderState, ModSummary, ModUpdate, ModUpdateReport } from "../types";
 import { dropOrder, ModsPage, moveOrder, winnerFor } from "./ModsPage";
 
 afterEach(cleanup);
@@ -42,6 +42,8 @@ function props(overrides: Partial<Parameters<typeof ModsPage>[0]> = {}): Paramet
     onInstall: vi.fn(), onToggle: vi.fn(), onUninstall: vi.fn(), onVerify: vi.fn(), onRename: vi.fn(),
     onOpenInstalled: vi.fn(), onOpenSource: vi.fn(), onBrowseNexus: vi.fn(),
     onPreviewOrder: vi.fn(), onApplyOrder: vi.fn(), onApplyUe4ssOrder: vi.fn(), onCancelOrder: vi.fn(),
+    updates: null, checkingUpdates: false, canCheckUpdates: true, directDownload: false,
+    onCheckUpdates: vi.fn(), onUpdateMod: vi.fn(), onLinkMod: vi.fn(), onSetModChecked: vi.fn(), onOpenModPage: vi.fn(), onSetHidden: vi.fn(),
     ...overrides
   };
 }
@@ -49,7 +51,7 @@ function props(overrides: Partial<Parameters<typeof ModsPage>[0]> = {}): Paramet
 const installed = (id: string, modType: ModSummary["modType"]): ModSummary => ({
   id, name: id, version: null, modType, enabled: true, installedAt: "2026-08-30T00:00:00Z",
   installedBuild: null, packageCount: 0, conflictCount: 0, potentialConflictCount: 0,
-  loadPriority: null, files: []
+  loadPriority: null, nexusModId: null, nexusUrl: null, nexusIgnored: false, hidden: false, files: []
 });
 
 async function openLoadOrder() {
@@ -226,5 +228,195 @@ describe("UE4SS start passes", () => {
     await userEvent.click(screen.getByRole("button", { name: "Move Harder up" }));
     await userEvent.click(screen.getByRole("button", { name: "Apply start order" }));
     expect(onApplyUe4ssOrder).toHaveBeenCalledWith(["dll", "lua-b", "lua-a"]);
+  });
+});
+
+describe("Nexus mod updates", () => {
+  const update: ModUpdate = {
+    modId: "unlocked", name: "ZCUnlocked", installedVersion: "1.3", installedFileId: 200,
+    nexusModId: 34, latestFileId: 260, latestVersion: "1.4", latestFileName: "ZCUnlocked-1.4.zip",
+    pageUrl: "https://www.nexusmods.com/starwarszerocompany/mods/34?tab=files",
+    nxmUrl: "nxm://starwarszerocompany/mods/34/files/260",
+    checkedAt: "2026-09-01T00:00:00Z"
+  };
+  const report = (overrides: Partial<ModUpdateReport> = {}): ModUpdateReport => ({
+    updates: [update], tracked: 1, identified: 0, unmatched: 0, ignored: 0, checkedAt: "2026-09-01T00:00:00Z", fromCache: true, problem: null, ...overrides
+  });
+  const library = [{ ...installed("unlocked", "iostore"), name: "ZCUnlocked", version: "1.3" }];
+
+  it("marks the mod and offers the update", async () => {
+    const onUpdateMod = vi.fn();
+    render(<ModsPage {...props({ mods: library, updates: report(), onUpdateMod })} />);
+    expect(screen.getByText("1 update available")).toBeDefined();
+    expect(screen.getByText("Update available: 1.4")).toBeDefined();
+    await userEvent.click(screen.getByRole("button", { name: "Open on Nexus" }));
+    expect(onUpdateMod).toHaveBeenCalledWith(update);
+  });
+
+  it("offers a direct download only to a premium account", () => {
+    render(<ModsPage {...props({ mods: library, updates: report(), directDownload: true })} />);
+    expect(screen.getByRole("button", { name: "Download update" })).toBeDefined();
+  });
+
+  it("says nothing when the last check found nothing", () => {
+    render(<ModsPage {...props({ mods: library, updates: report({ updates: [] }) })} />);
+    expect(screen.queryByText(/update available/i)).toBeNull();
+  });
+
+  it("cannot check without a stored API key", async () => {
+    const onCheckUpdates = vi.fn();
+    render(<ModsPage {...props({ mods: library, updates: null, canCheckUpdates: false, onCheckUpdates })} />);
+    const button = screen.getByRole("button", { name: "Check for updates" });
+    expect(button.hasAttribute("disabled")).toBe(true);
+    await userEvent.click(button);
+    expect(onCheckUpdates).not.toHaveBeenCalled();
+  });
+
+  it("checks on demand", async () => {
+    const onCheckUpdates = vi.fn();
+    render(<ModsPage {...props({ mods: library, updates: null, onCheckUpdates })} />);
+    await userEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+    expect(onCheckUpdates).toHaveBeenCalled();
+  });
+});
+
+describe("linking a mod that was not downloaded here", () => {
+  const orphan = installed("adopted", "ue4ss");
+
+  it("offers to link an unmatched mod by its Nexus address", async () => {
+    const onLinkMod = vi.fn();
+    render(<ModsPage {...props({ mods: [orphan], onLinkMod })} />);
+    await userEvent.click(screen.getByRole("button", { name: "More details for adopted" }));
+    const field = screen.getByRole("textbox", { name: "Nexus Mods address for adopted" });
+    await userEvent.type(field, "https://www.nexusmods.com/games/starwarszerocompany/mods/34");
+    await userEvent.click(screen.getByRole("button", { name: "Link" }));
+    expect(onLinkMod).toHaveBeenCalledWith(orphan, "https://www.nexusmods.com/games/starwarszerocompany/mods/34");
+  });
+
+  it("shows the linked mod and offers to stop checking it", async () => {
+    const onSetModChecked = vi.fn();
+    const linked = { ...orphan, nexusModId: 34 };
+    render(<ModsPage {...props({ mods: [linked], onSetModChecked })} />);
+    await userEvent.click(screen.getByRole("button", { name: "More details for adopted" }));
+    expect(screen.getByText("#34")).toBeDefined();
+    await userEvent.click(screen.getByRole("button", { name: "Stop checking this mod" }));
+    expect(onSetModChecked).toHaveBeenCalledWith(linked, false);
+  });
+
+  it("lets a mod that is not on Nexus be left out for good", async () => {
+    const onSetModChecked = vi.fn();
+    render(<ModsPage {...props({ mods: [orphan], onSetModChecked })} />);
+    await userEvent.click(screen.getByRole("button", { name: "More details for adopted" }));
+    await userEvent.click(screen.getByRole("button", { name: "Never check this mod" }));
+    expect(onSetModChecked).toHaveBeenCalledWith(orphan, false);
+  });
+
+  it("offers an excluded mod back, and stops asking for an address", async () => {
+    const onSetModChecked = vi.fn();
+    const excluded = { ...orphan, nexusIgnored: true };
+    render(<ModsPage {...props({ mods: [excluded], onSetModChecked })} />);
+    await userEvent.click(screen.getByRole("button", { name: "More details for adopted" }));
+    expect(screen.queryByRole("textbox", { name: "Nexus Mods address for adopted" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Check this mod again" }));
+    expect(onSetModChecked).toHaveBeenCalledWith(excluded, true);
+  });
+});
+
+describe("hiding a mod", () => {
+  const runtime = { ...installed("bpml", "ue4ss"), name: "BPML Generic Functions" };
+
+  it("keeps a hidden mod out of the library list without uninstalling it", async () => {
+    const onSetHidden = vi.fn();
+    render(<ModsPage {...props({ mods: [runtime, installed("alpha", "iostore")], onSetHidden })} />);
+    await userEvent.click(screen.getByRole("button", { name: "Hide BPML Generic Functions" }));
+    expect(onSetHidden).toHaveBeenCalledWith(runtime, true);
+  });
+
+  it("leaves hidden mods out of every other view and counts them", () => {
+    render(<ModsPage {...props({ mods: [{ ...runtime, hidden: true }, installed("alpha", "iostore")] })} />);
+    expect(screen.queryByText("BPML Generic Functions")).toBeNull();
+    expect(screen.getByText("1 of 2 shown · 1 hidden")).toBeDefined();
+  });
+
+  it("shows them under the hidden filter, where they can be brought back", async () => {
+    const onSetHidden = vi.fn();
+    const hidden = { ...runtime, hidden: true };
+    render(<ModsPage {...props({ mods: [hidden], onSetHidden })} />);
+    await userEvent.selectOptions(screen.getByLabelText("Filter installed mods"), "hidden");
+    expect(screen.getByText("BPML Generic Functions")).toBeDefined();
+    await userEvent.click(screen.getByRole("button", { name: "Show BPML Generic Functions" }));
+    expect(onSetHidden).toHaveBeenCalledWith(hidden, false);
+  });
+});
+
+describe("a mod removed while its order is drafted", () => {
+  // The bug behind the black window: uninstalling a packaged mod refreshed the
+  // list while the drafted order still named it, and the order row looked that
+  // name up in a list it had just left. The lookup threw during render, React
+  // unmounted the whole tree, and the window went dark until the application
+  // was restarted.
+  it("renders without throwing when the mod list shrinks under the draft", async () => {
+    const { rerender } = render(<ModsPage {...props({ mods: [installed("alpha", "iostore"), installed("bravo", "iostore")] })} />);
+    await openLoadOrder();
+    expect(screen.getByText("Alpha")).toBeDefined();
+
+    const shrunk: LoadOrderState = {
+      ...loadOrder,
+      entries: loadOrder.entries.filter(entry => entry.id !== "alpha"),
+      activeConflicts: []
+    };
+    expect(() => rerender(<ModsPage {...props({ mods: [installed("bravo", "iostore")], loadOrder: shrunk })} />)).not.toThrow();
+    expect(screen.queryByText("Alpha")).toBeNull();
+    expect(screen.getByText("Bravo")).toBeDefined();
+  });
+
+  it("does not claim the order changed just because a mod was removed", async () => {
+    const { rerender } = render(<ModsPage {...props()} />);
+    await openLoadOrder();
+    const shrunk: LoadOrderState = {
+      ...loadOrder,
+      entries: loadOrder.entries.filter(entry => entry.id !== "alpha"),
+      activeConflicts: []
+    };
+    rerender(<ModsPage {...props({ loadOrder: shrunk })} />);
+    expect(screen.queryByText("Load order changed")).toBeNull();
+  });
+
+  it("survives a UE4SS mod leaving the start order the same way", async () => {
+    const withRuntime: LoadOrderState = {
+      ...loadOrder,
+      ue4ssEntries: [
+        { id: "runtime", name: "Squad Six - Runtime", modType: "ue4ss", runtimeKind: "script", enabled: true, priority: 1, supported: true, supportReason: null, applied: true, activeConflictCount: 0, potentialConflictCount: 0 }
+      ]
+    };
+    const { rerender } = render(<ModsPage {...props({ loadOrder: withRuntime })} />);
+    await openLoadOrder();
+    expect(screen.getByText("Squad Six - Runtime")).toBeDefined();
+    expect(() => rerender(<ModsPage {...props({ loadOrder: { ...withRuntime, ue4ssEntries: [] } })} />)).not.toThrow();
+    expect(screen.queryByText("UE4SS start order changed")).toBeNull();
+  });
+});
+
+describe("opening a mod on Nexus", () => {
+  const linked = { ...installed("unlocked", "iostore"), name: "ZCUnlocked", nexusModId: 34, nexusUrl: "https://www.nexusmods.com/starwarszerocompany/mods/34" };
+
+  it("offers the page from the row of a linked mod", async () => {
+    const onOpenModPage = vi.fn();
+    render(<ModsPage {...props({ mods: [linked], onOpenModPage })} />);
+    await userEvent.click(screen.getByRole("button", { name: "Open ZCUnlocked on Nexus Mods" }));
+    expect(onOpenModPage).toHaveBeenCalledWith(linked);
+  });
+
+  it("offers nothing to open for a mod with no page", () => {
+    render(<ModsPage {...props({ mods: [installed("mine", "iostore")] })} />);
+    expect(screen.queryByRole("button", { name: /on Nexus Mods/ })).toBeNull();
+  });
+
+  it("offers it from the details panel as well", async () => {
+    const onOpenModPage = vi.fn();
+    render(<ModsPage {...props({ mods: [linked], onOpenModPage })} />);
+    await userEvent.click(screen.getByRole("button", { name: "More details for ZCUnlocked" }));
+    await userEvent.click(screen.getByRole("button", { name: "Open on Nexus Mods" }));
+    expect(onOpenModPage).toHaveBeenCalledWith(linked);
   });
 });

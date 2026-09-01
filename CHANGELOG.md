@@ -2,6 +2,85 @@
 
 All notable changes are documented here.
 
+## 0.5.0
+
+### Fixed
+
+- Uninstalling a packaged mod no longer takes the whole interface down. The
+  load order is drafted in local state, and the refresh that follows a removal
+  arrived while the draft still named the removed mod; rendering that row looked
+  the name up in a list it had just left, threw during render, and React
+  unmounted everything — leaving a dark, unresponsive window that only a restart
+  fixed. Both order drafts are now reconciled against the live lists before
+  anything reads them. Reported against 0.4.0 and 0.4.1 with Squad Six, whose
+  Core and Runtime components are removed one after the other.
+- Whatever else goes wrong, the window no longer goes blank: an interface error
+  now shows what failed, with **Reload the interface** and **Try to continue**,
+  instead of unmounting into an empty window.
+- Removing or disabling a UE4SS mod now takes its folders with it. The payload
+  was deleted but `ue4ss/Mods/<Name>/Scripts` was left standing, so the runtime
+  and the user both still saw a mod that was no longer installed and the tree
+  had to be cleared by hand. Only empty directories below the deployment base
+  are removed: a folder holding anything else, and the shared `Mods` base
+  itself, are left alone, and game-folder mods are not pruned at all.
+
+- Installed mods are now checked for newer files on Nexus Mods. A download
+  through the handoff records which mod and file it came from, installation
+  attaches that to the mod, and **Check for updates** on the Mods page asks
+  Nexus what each of them now offers.
+- A library that predates any of this is not left out. A check first offers the
+  MD5 of every unmatched mod's archive to Nexus, which recognises the file it
+  was uploaded as and identifies the mod and file exactly. An archive Nexus does
+  not know is remembered as such, so an automatic check does not ask again.
+- A mod whose archive is gone, or that was adopted from disk and never had one,
+  can be pointed at its Nexus page by hand from **More details**. The file
+  recorded as installed is the one carrying the installed version, so linking
+  never invents an update.
+- A mod linked to a Nexus page can be opened there from its row in the library
+  and from **More details**. A mod with no page shows no button rather than a
+  dead one.
+- Any mod can be taken out of update checking from **More details**, whether or
+  not it is linked to a Nexus page. A mod that never came from Nexus was
+  otherwise offered to the archive lookup on every check the user asked for,
+  which spends a request per check on a mod Nexus will never recognise. An
+  excluded mod is left out of both the checks and the lookup, so unlinking now
+  sticks rather than being matched and linked again by the next check, and
+  **Check this mod again** puts it back.
+- An update is the newest file Nexus still offers in the `MAIN` or `UPDATE`
+  categories. Superseded, archived, and deleted files are ignored, an optional
+  extra is never mistaken for an upgrade, and file ids decide what is newer
+  because Nexus issues them in upload order.
+- A premium account can fetch the update in place; the file then goes through
+  the same inspection and replacement path as a website handoff. A free account
+  is sent to the mod's files tab, because only the website can mint the key its
+  download link needs.
+- Added an opt-in **Check installed mods for updates when the application
+  starts** setting, off by default. It is saved the moment it is set, like the
+  key and the handler beside it. The stored result stands for six hours, so
+  reopening the manager does not spend the Nexus rate limit, and a check cut
+  short by a rate limit is retried rather than waiting the interval out.
+- Settings remembers which Nexus account a stored key belongs to, so the
+  connection is described again after a restart without asking Nexus on launch.
+- A download started from the website now has a screen of its own: the file
+  name, a progress bar, and the transferred size appear as soon as the link is
+  resolved, instead of an inspection spinner that sat there until a payload
+  appeared. Progress is also reported at most ten times a second rather than
+  once per chunk, which was flooding the interface it was meant to keep alive.
+- Mods can be hidden from the library list. A hidden mod stays installed,
+  deployed, and ordered — this is for the UE4SS runtime's own bundled mods,
+  which existing-mod discovery adopts and which then crowd the list. The
+  **Hidden only** filter brings them back, and the count line says how many
+  are out of view.
+- The Mods, Settings, and About pages now use the whole window width instead of
+  stopping at a fixed centred column.
+- A manager update now offers **Get it on Nexus Mods** beside the GitHub release
+  link, and the About page links the manager's Nexus page whether or not an
+  update is waiting. A release is published in both places, so the notice no
+  longer assumes where this copy came from.
+- A `zcom-mod.json` manifest is no longer reported as a file that is "not part
+  of a recognized mod layout". The manager reads that file; saying it did not
+  told authors their own metadata was a problem.
+
 ## 0.4.1
 
 - Multi-component archives can carry a separate `zcom-mod.json` beside each

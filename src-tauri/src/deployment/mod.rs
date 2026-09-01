@@ -42,6 +42,38 @@ fn destination_base(game: &Path, kind: &str) -> PathBuf {
     }
 }
 
+/// Removes the directories a mod's own payload leaves standing.
+///
+/// A UE4SS mod deploys into a tree of its own — `ue4ss/Mods/<Name>/Scripts` —
+/// and removing the files left that tree in place, so the runtime and the user
+/// both still saw a mod that was no longer installed. Only empty directories
+/// strictly below the deployment base are removed, so a directory holding
+/// anything else survives and the base itself is never touched.
+///
+/// A game-folder mod is deliberately left alone: its base is the game
+/// installation, and the directories under it belong to the game rather than to
+/// any mod.
+fn prune_empty_dirs(game: &Path, kind: &str, removed: &[PathBuf]) {
+    if kind == "gamedir" {
+        return;
+    }
+    let base = destination_base(game, kind);
+    for path in removed {
+        let mut current = path.parent().map(Path::to_path_buf);
+        while let Some(directory) = current {
+            if directory == base || !directory.starts_with(&base) {
+                break;
+            }
+            let empty = fs::read_dir(&directory)
+                .is_ok_and(|mut entries| entries.next().is_none());
+            if !empty || fs::remove_dir(&directory).is_err() {
+                break;
+            }
+            current = directory.parent().map(Path::to_path_buf);
+        }
+    }
+}
+
 fn copy_atomic(source: &Path, destination: &Path) -> Result<()> {
     if destination.exists() {
         return Err(AppError::DeploymentConflict(destination.to_path_buf()));
@@ -246,6 +278,11 @@ fn install_over(
         conflict_count: 0,
         potential_conflict_count: 0,
         load_priority,
+        // Attached after installation, when the archive is known to Nexus.
+        nexus_mod_id: None,
+        nexus_url: None,
+        nexus_ignored: false,
+        hidden: false,
         files: rows
             .iter()
             .map(|(_, d, s, h)| ModFile {
@@ -461,13 +498,16 @@ pub fn set_enabled(
                 return Err(AppError::ChecksumMismatch(path));
             }
         }
+        let mut removed = Vec::new();
         for (_, destination, _, _) in &records {
             let path = PathBuf::from(destination);
             if path.exists() {
-                fs::remove_file(path)?
+                fs::remove_file(&path)?;
+                removed.push(path);
             }
         }
         restore_backups(conn, library, id)?;
+        prune_empty_dirs(game, &record.mod_type, &removed);
         for key in &record.keys {
             ue4ss::update_mods_txt(game, key, false)?
         }
@@ -488,6 +528,7 @@ pub fn uninstall(
     // disk. Remove an exact managed copy regardless of the enabled flag, but
     // keep anything else (such as a restored original game file) when the mod
     // is disabled.
+    let mut removed = Vec::new();
     for (_, destination, _, expected) in &records {
         let path = PathBuf::from(destination);
         if !path.exists() {
@@ -498,7 +539,8 @@ pub fn uninstall(
             return Err(AppError::ChecksumMismatch(path));
         }
         if matches || (record.enabled && force) {
-            fs::remove_file(path)?
+            fs::remove_file(&path)?;
+            removed.push(path);
         }
     }
     if record.enabled {
@@ -508,6 +550,8 @@ pub fn uninstall(
         for key in &record.keys {
             let _ = ue4ss::update_mods_txt(game, key, false);
         }
+        // The payload is gone; the folders it created would otherwise stay.
+        prune_empty_dirs(game, &record.mod_type, &removed);
     }
     database::remove_mod(conn, id)?;
     let dir = library.join(id);
@@ -592,6 +636,76 @@ mod tests {
         uninstall(&c, &l, &m.id, false, Some(&g)).unwrap();
         assert!(!deployed.exists());
     }
+    /// A UE4SS mod deploys into a folder tree of its own, the way Squad Six's
+    /// Runtime component does.
+    fn staged_ue4ss(root: &Path) -> StagedMod {
+        let src = root.join("main.lua");
+        fs::write(&src, b"return {}").unwrap();
+        StagedMod {
+            staging_id: "u".into(),
+            staging_root: root.into(),
+            source_archive: root.display().to_string(),
+            name: "Squad Six - Runtime".into(),
+            version: None,
+            author: None,
+            description: None,
+            mod_type: "ue4ss".into(),
+            deployment_keys: vec!["ZCOMSquadSix".into()],
+            files: vec![PayloadFile {
+                source: src,
+                library_relative: "ZCOMSquadSix/Scripts/main.lua".into(),
+                destination_relative: "ZCOMSquadSix/Scripts/main.lua".into(),
+            }],
+            packages: vec![],
+            verification: "not-required".into(),
+            verification_details: None,
+        }
+    }
+
+    #[test]
+    fn removing_a_ue4ss_mod_takes_its_folders_with_it() {
+        let d = tempdir().unwrap();
+        let g = d.path().join("game");
+        let l = d.path().join("library");
+        game(&g);
+        fs::create_dir_all(&l).unwrap();
+        let mut c = database::open(&d.path().join("db")).unwrap();
+        let m = install(&mut c, &l, &g, &staged_ue4ss(d.path()), None).unwrap();
+        let mods_root = g.join("SWZeroCompany/Binaries/Win64/ue4ss/Mods");
+        let folder = mods_root.join("ZCOMSquadSix");
+        assert!(folder.join("Scripts/main.lua").exists());
+
+        // Disabling clears the tree as well, so a disabled mod does not look
+        // installed to the runtime.
+        set_enabled(&c, &l, &g, &m.id, false).unwrap();
+        assert!(!folder.exists(), "the mod folder outlived its payload");
+        set_enabled(&c, &l, &g, &m.id, true).unwrap();
+        assert!(folder.join("Scripts/main.lua").exists());
+
+        uninstall(&c, &l, &m.id, false, Some(&g)).unwrap();
+        assert!(!folder.exists(), "the mod folder outlived the mod");
+        // The base every UE4SS mod shares is never removed with one of them.
+        assert!(mods_root.exists());
+    }
+
+    #[test]
+    fn a_folder_holding_anything_else_is_left_alone() {
+        let d = tempdir().unwrap();
+        let g = d.path().join("game");
+        let l = d.path().join("library");
+        game(&g);
+        fs::create_dir_all(&l).unwrap();
+        let mut c = database::open(&d.path().join("db")).unwrap();
+        let m = install(&mut c, &l, &g, &staged_ue4ss(d.path()), None).unwrap();
+        let folder = g.join("SWZeroCompany/Binaries/Win64/ue4ss/Mods/ZCOMSquadSix");
+        // Settings the user wrote, or anything the manager does not own.
+        fs::write(folder.join("Scripts/settings.lua"), b"local x = 1").unwrap();
+
+        uninstall(&c, &l, &m.id, false, Some(&g)).unwrap();
+        assert!(folder.join("Scripts/settings.lua").exists());
+        assert!(!folder.join("Scripts/main.lua").exists());
+    }
+
     #[test]
     fn checksum_mismatch_is_kept() {
         let d = tempdir().unwrap();

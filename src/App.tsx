@@ -14,10 +14,10 @@ import { ModsPage } from "./pages/ModsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { AboutPage } from "./pages/AboutPage";
 import { backend, friendlyError } from "./services/backend";
-import type { AdoptionGroup, AdoptionReport, AppSettings, Dashboard, DiagnosticReport, DownloadProgress, ExistingModScan, Links, LoadOrderPreview, LoadOrderState, ModPreview, ModSummary, NexusAccount, NexusStatus, UpdateInfo } from "./types";
+import type { AdoptionGroup, AdoptionReport, AppSettings, Dashboard, DiagnosticReport, DownloadProgress, ExistingModScan, Links, LoadOrderPreview, LoadOrderState, ModPreview, ModSummary, ModUpdate, ModUpdateReport, NexusAccount, NexusStatus, UpdateInfo } from "./types";
 
-const defaultSettings: AppSettings = { gamePath: null, customExecutablePath: null, retocPath: null, logLevel: "normal", advancedPackageNames: false, reducedMotion: false };
-const defaultLinks: Links = { ue4ssDownload: "", nexusGame: "", project: "" };
+const defaultSettings: AppSettings = { gamePath: null, customExecutablePath: null, retocPath: null, logLevel: "normal", advancedPackageNames: false, reducedMotion: false, nexusAutoUpdateCheck: false };
+const defaultLinks: Links = { ue4ssDownload: "", nexusGame: "", nexusManager: "", project: "" };
 const defaultLoadOrder: LoadOrderState = { entries: [], ue4ssEntries: [], activeConflicts: [], potentialConflicts: [], unapplied: false };
 
 export default function App() {
@@ -31,6 +31,8 @@ export default function App() {
   const [nexus, setNexus] = useState<NexusStatus | null>(null);
   const [nexusAccount, setNexusAccount] = useState<NexusAccount | null>(null);
   const [download, setDownload] = useState<DownloadProgress | null>(null);
+  const [modUpdates, setModUpdates] = useState<ModUpdateReport | null>(null);
+  const [checkingMods, setCheckingMods] = useState(false);
   const [previews, setPreviews] = useState<ModPreview[]>([]);
   // Names the person edited before installing, keyed by staging id. An archive
   // can hold several mods, so each keeps its own draft.
@@ -52,6 +54,7 @@ export default function App() {
   const [adoptingExisting, setAdoptingExisting] = useState(false);
   const [toast, setToast] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const updateCheckStarted = useRef(false);
+  const modUpdateCheckStarted = useRef(false);
   const automaticDiscoveryStarted = useRef(false);
   const existingDiscoveryAttempt = useRef(0);
   // Held in a ref as well as in state so an inspection that finishes while
@@ -62,8 +65,8 @@ export default function App() {
   const notify = (text: string, kind: "ok" | "error" = "ok") => { setToast({ text, kind }); window.setTimeout(() => setToast(null), 4500); };
   const refresh = useCallback(async () => {
     try {
-      const [nextDashboard, nextMods, nextLoadOrder, nextSettings, nextLinks, nextNexus] = await Promise.all([backend.dashboard(), backend.mods(), backend.loadOrder(), backend.settings(), backend.links(), backend.nexusStatus()]);
-      setDashboard(nextDashboard); setMods(nextMods); setLoadOrder(nextLoadOrder); setSettings(nextSettings); setLinks(nextLinks); setNexus(nextNexus);
+      const [nextDashboard, nextMods, nextLoadOrder, nextSettings, nextLinks, nextNexus, nextModUpdates] = await Promise.all([backend.dashboard(), backend.mods(), backend.loadOrder(), backend.settings(), backend.links(), backend.nexusStatus(), backend.modUpdates()]);
+      setDashboard(nextDashboard); setMods(nextMods); setLoadOrder(nextLoadOrder); setSettings(nextSettings); setLinks(nextLinks); setNexus(nextNexus); setModUpdates(nextModUpdates);
       document.documentElement.dataset.reduceMotion = String(nextSettings.reducedMotion);
     } catch (error) { notify(friendlyError(error), "error"); }
   }, []);
@@ -79,6 +82,14 @@ export default function App() {
     updateCheckStarted.current = true;
     void checkUpdates(false);
   }, []);
+  // The opt-in start-up check. The backend keeps its own stored result for a
+  // few hours, so reopening the manager does not spend the Nexus allowance,
+  // and a quiet failure stays quiet: only the button reports problems.
+  useEffect(() => {
+    if (!settings.nexusAutoUpdateCheck || !nexus?.hasKey || modUpdateCheckStarted.current) return;
+    modUpdateCheckStarted.current = true;
+    void checkModUpdates(false);
+  }, [settings.nexusAutoUpdateCheck, nexus?.hasKey]); // eslint-disable-line react-hooks/exhaustive-deps
   useSubscription(() => getCurrentWebview().onDragDropEvent(event => {
     if (event.payload.type === "drop" && event.payload.paths[0]) { setPage("install"); void inspect(event.payload.paths[0]); }
   }), []);
@@ -238,7 +249,10 @@ export default function App() {
   }
   // Handles a link the browser passed over from the Mod Manager Download button.
   async function handoff(url: string) {
-    setPage("install"); await discardPreviews(); setLoading(true); setDownload(null);
+    // The transfer screen goes up before the first request, so pressing Mod
+    // Manager Download never looks like nothing happened.
+    setPage("install"); await discardPreviews(); setLoading(true);
+    setDownload({ name: "", done: 0, total: null });
     try {
       const path = await backend.nexusDownload(url);
       setDownload(null);
@@ -248,6 +262,70 @@ export default function App() {
       setPreviews(found);
     } catch (e) { notify(friendlyError(e), "error"); setDownload(null); }
     finally { setLoading(false); }
+  }
+  // Asks Nexus which files the tracked mods now offer. `force` is the button;
+  // without it the backend may answer from its stored result.
+  async function checkModUpdates(force: boolean) {
+    if (force) setCheckingMods(true);
+    try {
+      const report = await backend.checkModUpdates(force);
+      setModUpdates(report);
+      if (!force) return;
+      // Identification runs first, so a mod matched from its archive is
+      // reported here even though nothing was downloaded to make it happen.
+      const matched = report.identified > 0 ? ` ${report.identified} mod${report.identified === 1 ? " was" : "s were"} matched to a Nexus page.` : "";
+      const unmatched = report.unmatched > 0 ? ` ${report.unmatched} could not be matched; link them from More details, or stop checking them there.` : "";
+      if (report.problem) { notify(`${report.problem}${matched}`, "error"); return; }
+      if (report.tracked === 0) { notify(`No installed mod could be matched to a Nexus mod, so there is nothing to check.${unmatched}`); return; }
+      notify((report.updates.length === 0
+        ? `No updates. ${report.tracked} mod${report.tracked === 1 ? "" : "s"} checked.`
+        : `${report.updates.length} update${report.updates.length === 1 ? " is" : "s are"} available.`) + matched + unmatched);
+    } catch (e) { if (force) notify(friendlyError(e), "error"); }
+    finally { if (force) setCheckingMods(false); }
+  }
+  // A free account cannot get a download link without the key the website
+  // mints, so the update starts where it has to: on the mod's files tab. A
+  // premium key resolves the same link here, and the download then runs
+  // through the identical inspect-and-replace path as a website handoff.
+  async function updateMod(update: ModUpdate) {
+    if (nexus?.premium) { await handoff(update.nxmUrl); return; }
+    openExternal(update.pageUrl);
+  }
+  // Points a mod at a Nexus page by hand, for one whose archive is gone or was
+  // never a Nexus download.
+  async function linkMod(mod: ModSummary, reference: string) {
+    try {
+      setModUpdates(await backend.linkModToNexus(mod.id, reference));
+      await refresh();
+      notify(`${mod.name} is now checked for updates.`);
+    } catch (e) { notify(friendlyError(e), "error"); }
+  }
+  // Covers both a wrongly linked mod and one that never came from Nexus: while
+  // checking is off it is neither checked nor offered to the archive lookup.
+  async function setModChecked(mod: ModSummary, checked: boolean) {
+    try {
+      setModUpdates(await backend.setModChecked(mod.id, checked));
+      await refresh();
+      notify(checked ? `${mod.name} is checked for updates again.` : `${mod.name} is no longer checked for updates.`);
+    } catch (e) { notify(friendlyError(e), "error"); }
+  }
+  // Hiding is a view decision: the mod stays installed, deployed, and ordered.
+  async function setHidden(mod: ModSummary, hidden: boolean) {
+    try {
+      await backend.setHidden(mod.id, hidden);
+      await refresh();
+      notify(hidden ? `${mod.name} is hidden from the library list.` : `${mod.name} is shown again.`);
+    } catch (e) { notify(friendlyError(e), "error"); }
+  }
+  // Saved on the spot, like everything else in that panel. Going through the
+  // Settings form would have left it to a Save press and let any refresh in
+  // between discard it.
+  async function setAutoUpdateCheck(enabled: boolean) {
+    try {
+      await backend.setNexusAutoCheck(enabled);
+      setSettings(current => ({ ...current, nexusAutoUpdateCheck: enabled }));
+      notify(enabled ? "Installed mods will be checked for updates at start-up." : "Start-up update checks are off.");
+    } catch (e) { notify(friendlyError(e), "error"); }
   }
   async function saveNexusKey(key: string) {
     try {
@@ -307,11 +385,11 @@ export default function App() {
   if (!dashboard) return <div className="splash"><img className="brand-mark" src={brandMark} alt="" width={96} height={96} /><p>Preparing your mod library…</p></div>;
   return <Shell page={page} onPage={setPage} gameReady={dashboard.game.detected} updateAvailable={update?.updateAvailable === true}>
     {page === "home" && <HomePage data={dashboard} onInstall={() => setPage("install")} onDiagnose={() => setPage("diagnostics")} onLocate={locateGame} onOpenMods={() => void openFolder("mods")} onOpenGame={() => void openFolder("game")} onLaunchGame={() => void launchGame()} onGetUe4ss={() => openExternal(links.ue4ssDownload)} onInstallUe4ss={() => void installUe4ss()} busy={loading} launching={launching} canLaunch={dashboard.game.detected || !!settings.customExecutablePath} existingModsFound={existingPrompt ? (existingScan?.candidates.length ?? 0) + (existingScan?.unsupported.length ?? 0) : 0} onDismissExisting={() => setExistingPrompt(false)} onReviewExisting={() => { setExistingPrompt(false); setPage("mods"); setExistingReview(true); }} />}
-    {page === "mods" && <ModsPage mods={mods} loadOrder={loadOrder} orderPreview={orderPreview} orderBusy={orderBusy} onPreviewOrder={ids => void previewOrder(ids)} onApplyOrder={ids => void applyOrder(ids)} onApplyUe4ssOrder={ids => void applyUe4ssOrder(ids)} onCancelOrder={() => setOrderPreview(null)} onBrowseNexus={() => openExternal(links.nexusGame)} busy={busyMod} onInstall={() => setPage("install")} onDiscover={() => void discoverExisting(true)} discovering={discoveringExisting} onToggle={toggle} onUninstall={uninstall} onVerify={verify} onRename={rename} onOpenInstalled={mod => void openFolder(`installed:${mod.id}`)} onOpenSource={mod => void openFolder(`mod:${mod.id}`)} />}
+    {page === "mods" && <ModsPage mods={mods} loadOrder={loadOrder} orderPreview={orderPreview} orderBusy={orderBusy} onPreviewOrder={ids => void previewOrder(ids)} onApplyOrder={ids => void applyOrder(ids)} onApplyUe4ssOrder={ids => void applyUe4ssOrder(ids)} onCancelOrder={() => setOrderPreview(null)} onBrowseNexus={() => openExternal(links.nexusGame)} busy={busyMod} onInstall={() => setPage("install")} onDiscover={() => void discoverExisting(true)} discovering={discoveringExisting} onToggle={toggle} onUninstall={uninstall} onVerify={verify} onRename={rename} onOpenInstalled={mod => void openFolder(`installed:${mod.id}`)} onOpenSource={mod => void openFolder(`mod:${mod.id}`)} updates={modUpdates} checkingUpdates={checkingMods} canCheckUpdates={nexus?.hasKey ?? false} directDownload={nexus?.premium ?? false} onCheckUpdates={() => void checkModUpdates(true)} onUpdateMod={update => void updateMod(update)} onLinkMod={(mod, reference) => void linkMod(mod, reference)} onSetModChecked={(mod, checked) => void setModChecked(mod, checked)} onOpenModPage={mod => { if (mod.nexusUrl) openExternal(mod.nexusUrl); }} onSetHidden={(mod, hidden) => void setHidden(mod, hidden)} />}
     {page === "install" && <InstallPage previews={previews} names={names} loading={loading} download={download} advanced={advanced} installing={installing} onAdvanced={() => setAdvanced(!advanced)} onName={(stagingId, name) => setNames(current => ({ ...current, [stagingId]: name }))} onChooseFile={() => void choose({ filters: [{ name: "Supported mods", extensions: ["zip", "7z", "rar", "pak", "utoc", "ucas"] }] })} onChooseFolder={() => void choose({ directory: true })} onInstall={mod => void install(mod)} onInstallAll={mods => void installAll(mods)} onInstallRuntime={mod => void installRuntimeFrom(mod)} onCancel={() => void discardPreviews()} />}
     {page === "diagnostics" && <DiagnosticsPage report={diagnostics} loading={loading} onRun={() => void runDiagnostics()} onCopy={() => void navigator.clipboard.writeText(diagnostics?.text ?? "").then(() => notify("Diagnostic report copied."))} />}
-    {page === "settings" && <SettingsPage settings={settings} retoc={dashboard.retoc} onChange={setSettings} onSave={() => void saveSettings()} onPickGame={() => void locateGame()} onPickExecutable={async () => { const picked = await open({ multiple: false, title: "Select game executable or launcher" }); if (typeof picked === "string") setSettings({ ...settings, customExecutablePath: picked }); }} onPickRetoc={async () => { const picked = await open({ multiple: false, title: "Select retoc executable" }); if (typeof picked === "string") setSettings({ ...settings, retocPath: picked }); }} onOpenLogs={() => void openFolder("logs")} onOpenData={() => void openFolder("data")} links={links} onOpenLink={openExternal} nexus={nexus} nexusAccount={nexusAccount} onSaveNexusKey={saveNexusKey} onClearNexusKey={clearNexusKey} onToggleNxmHandler={toggleNxmHandler} />}
-    {page === "about" && <AboutPage projectUrl={links.project} onOpenLink={openExternal} update={update} checking={updateChecking} error={updateError} onCheckUpdates={() => void checkUpdates(true)} />}
+    {page === "settings" && <SettingsPage settings={settings} retoc={dashboard.retoc} onChange={setSettings} onSave={() => void saveSettings()} onPickGame={() => void locateGame()} onPickExecutable={async () => { const picked = await open({ multiple: false, title: "Select game executable or launcher" }); if (typeof picked === "string") setSettings({ ...settings, customExecutablePath: picked }); }} onPickRetoc={async () => { const picked = await open({ multiple: false, title: "Select retoc executable" }); if (typeof picked === "string") setSettings({ ...settings, retocPath: picked }); }} onOpenLogs={() => void openFolder("logs")} onOpenData={() => void openFolder("data")} links={links} onOpenLink={openExternal} nexus={nexus} nexusAccount={nexusAccount} onSaveNexusKey={saveNexusKey} onClearNexusKey={clearNexusKey} onToggleNxmHandler={toggleNxmHandler} onSetAutoUpdateCheck={setAutoUpdateCheck} />}
+    {page === "about" && <AboutPage projectUrl={links.project} nexusUrl={links.nexusManager} onOpenLink={openExternal} update={update} checking={updateChecking} error={updateError} onCheckUpdates={() => void checkUpdates(true)} />}
     {discoveringExisting && <div className="scan-indicator" role="status"><span className="spin" />Scanning game folders for existing mods…</div>}
     {existingReview && existingScan && <AdoptionDialog scan={existingScan} busy={adoptingExisting} onClose={() => setExistingReview(false)} onAdopt={adoptExisting} />}
     {toast && <div className={`toast ${toast.kind}`} role="status">{toast.text}</div>}
