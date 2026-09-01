@@ -1,4 +1,4 @@
-# Known Limitations — 0.4.0
+# Known Limitations — 0.4.1
 
 - 7z installation uses the open-source 7-Zip command-line program available on
   the host. ZIP support is built in. A missing `7z` produces setup guidance.

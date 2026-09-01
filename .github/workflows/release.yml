@@ -25,6 +25,8 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: package-lock.json
+      - name: Verify release version matches tag
+        run: npm run check:release-version -- "${{ github.ref_name }}"
       - uses: dtolnay/rust-toolchain@stable
       - uses: swatinem/rust-cache@v2
         with:

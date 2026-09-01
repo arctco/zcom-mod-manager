@@ -479,11 +479,15 @@ schema/                      optional community manifest schema
 CI builds the production executable on every main-branch push and pull request.
 Tags matching `v*` publish a GitHub release immediately and attach Linux
 AppImage/deb and Windows NSIS installer/portable zip artifacts. The release is
-not a draft, so smoke-test both platforms before tagging.
+not a draft, so bump the version in `package.json`, `package-lock.json`,
+`src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json`,
+then smoke-test both platforms before tagging. The release workflow rejects a
+tag that does not match those files.
 
 ```bash
-git tag -s v0.4.0 -m "ZCOM Mod Manager 0.4.0"
-git push origin v0.4.0
+npm run check:release-version -- v0.4.1
+git tag -s v0.4.1 -m "ZCOM Mod Manager 0.4.1"
+git push origin v0.4.1
 ```
 
 Confirm checksums after the run finishes. See
