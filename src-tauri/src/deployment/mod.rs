@@ -64,8 +64,7 @@ fn prune_empty_dirs(game: &Path, kind: &str, removed: &[PathBuf]) {
             if directory == base || !directory.starts_with(&base) {
                 break;
             }
-            let empty = fs::read_dir(&directory)
-                .is_ok_and(|mut entries| entries.next().is_none());
+            let empty = fs::read_dir(&directory).is_ok_and(|mut entries| entries.next().is_none());
             if !empty || fs::remove_dir(&directory).is_err() {
                 break;
             }

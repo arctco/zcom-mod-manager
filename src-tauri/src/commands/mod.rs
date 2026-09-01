@@ -549,7 +549,12 @@ pub fn install_mod(
     // Nexus whether a newer file exists; a hand-picked archive records nothing
     // and is simply never checked.
     match database::link_nexus_source(&conn, &summary.id, &staged.source_archive) {
-        Ok(true) => log(&ctx, "info", "nexus_source_linked", &format!("mod_id={}", summary.id)),
+        Ok(true) => log(
+            &ctx,
+            "info",
+            "nexus_source_linked",
+            &format!("mod_id={}", summary.id),
+        ),
         Ok(false) => {}
         Err(error) => log(&ctx, "warn", "nexus_source_not_linked", &error.to_string()),
     }
@@ -1032,7 +1037,11 @@ fn nexus_status_for(app: &tauri::AppHandle, conn: &rusqlite::Connection) -> Nexu
         has_key: storage.is_some(),
         account_name: storage
             .is_some()
-            .then(|| database::get_setting(conn, "nexus_account_name").ok().flatten())
+            .then(|| {
+                database::get_setting(conn, "nexus_account_name")
+                    .ok()
+                    .flatten()
+            })
             .flatten(),
         premium: storage.is_some()
             && database::get_setting(conn, "nexus_premium").ok().flatten() == Some("true".into()),
@@ -1146,7 +1155,12 @@ pub async fn nexus_download(url: String, app: tauri::AppHandle) -> Result<String
             &info.file_name,
         )
     }) {
-        log(&ctx, "warn", "nexus_source_not_recorded", &error.to_string());
+        log(
+            &ctx,
+            "warn",
+            "nexus_source_not_recorded",
+            &error.to_string(),
+        );
     }
     log(
         &ctx,
@@ -1327,7 +1341,10 @@ pub async fn link_mod_to_nexus(
         &ctx,
         "info",
         "nexus_mod_linked",
-        &format!("mod_id={mod_id} nexus_mod_id={nexus_mod_id} file_id={}", file.file_id),
+        &format!(
+            "mod_id={mod_id} nexus_mod_id={nexus_mod_id} file_id={}",
+            file.file_id
+        ),
     );
     update_report(&conn, false, 0, None)
 }
@@ -1519,7 +1536,9 @@ pub async fn check_mod_updates(force: bool, app: AppHandle) -> Result<ModUpdateR
 
 #[cfg(test)]
 mod update_tests {
-    use super::{checked_recently, configured_executable, replaced_by, update_report, version_is_newer};
+    use super::{
+        checked_recently, configured_executable, replaced_by, update_report, version_is_newer,
+    };
     use crate::{
         database,
         models::{AppSettings, PayloadFile, StagedMod},
@@ -1588,7 +1607,10 @@ mod update_tests {
         // The same file that is installed, and an older one, are not updates.
         for known in [latest(200, "1.3"), latest(180, "1.2")] {
             database::record_nexus_latest(&conn, 34, &known).unwrap();
-            assert!(update_report(&conn, true, 0, None).unwrap().updates.is_empty());
+            assert!(update_report(&conn, true, 0, None)
+                .unwrap()
+                .updates
+                .is_empty());
         }
         database::record_nexus_latest(&conn, 34, &latest(260, "1.4")).unwrap();
         let report = update_report(&conn, true, 0, None).unwrap();
@@ -1661,7 +1683,12 @@ mod update_tests {
         assert_eq!(installs[0].nexus_file_id, 260);
         let report = update_report(&conn, true, 1, None).unwrap();
         assert_eq!(
-            (report.tracked, report.identified, report.unmatched, report.ignored),
+            (
+                report.tracked,
+                report.identified,
+                report.unmatched,
+                report.ignored
+            ),
             (1, 1, 2, 0)
         );
     }
@@ -1671,10 +1698,18 @@ mod update_tests {
         let directory = tempdir().unwrap();
         let conn = database::open(&directory.path().join("db.sqlite3")).unwrap();
         installed_from_nexus(&conn, "unlocked", "/cache/unlocked.zip", 34, 200);
-        database::record_identification(&conn, "unlocked", "0123456789abcdef0123456789abcdef", true)
-            .unwrap();
+        database::record_identification(
+            &conn,
+            "unlocked",
+            "0123456789abcdef0123456789abcdef",
+            true,
+        )
+        .unwrap();
         database::record_nexus_latest(&conn, 34, &latest(260, "1.4")).unwrap();
-        assert_eq!(update_report(&conn, true, 0, None).unwrap().updates.len(), 1);
+        assert_eq!(
+            update_report(&conn, true, 0, None).unwrap().updates.len(),
+            1
+        );
 
         database::set_nexus_checked(&conn, "unlocked", false).unwrap();
         let report = update_report(&conn, true, 0, None).unwrap();
@@ -1710,7 +1745,10 @@ mod update_tests {
         database::set_nexus_checked(&conn, "mine", false).unwrap();
         assert!(database::untracked_installs(&conn).unwrap().is_empty());
         let report = update_report(&conn, true, 0, None).unwrap();
-        assert_eq!((report.tracked, report.unmatched, report.ignored), (0, 0, 1));
+        assert_eq!(
+            (report.tracked, report.unmatched, report.ignored),
+            (0, 0, 1)
+        );
     }
 
     #[test]

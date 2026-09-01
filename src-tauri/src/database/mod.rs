@@ -223,12 +223,7 @@ pub fn link_nexus_source(conn: &Connection, mod_id: &str, archive_path: &str) ->
     let Some((nexus_mod_id, nexus_file_id)) = found else {
         return Ok(false);
     };
-    set_nexus_ids(
-        conn,
-        mod_id,
-        nexus_mod_id as u64,
-        nexus_file_id as u64,
-    )?;
+    set_nexus_ids(conn, mod_id, nexus_mod_id as u64, nexus_file_id as u64)?;
     Ok(true)
 }
 
@@ -942,7 +937,12 @@ mod tests {
     fn hiding_a_mod_keeps_it_installed_and_ordered() {
         let directory = tempdir().unwrap();
         let mut conn = open(&directory.path().join("db.sqlite3")).unwrap();
-        add(&mut conn, "runtime", "Content/Paks/~mods/Runtime_P.pak", &[]);
+        add(
+            &mut conn,
+            "runtime",
+            "Content/Paks/~mods/Runtime_P.pak",
+            &[],
+        );
         assert!(!list_mods(&conn).unwrap()[0].hidden);
 
         set_hidden(&conn, "runtime", true).unwrap();

@@ -1069,7 +1069,10 @@ mod tests {
             "the manager read that manifest: {warnings:?}"
         );
         // A file it genuinely did not recognise is still reported.
-        assert!(warnings.iter().any(|w| w.contains("readme.txt")), "{warnings:?}");
+        assert!(
+            warnings.iter().any(|w| w.contains("readme.txt")),
+            "{warnings:?}"
+        );
     }
 
     #[test]
