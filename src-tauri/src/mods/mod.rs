@@ -306,12 +306,21 @@ fn collect(
         return Ok(vec![(staged, preview)]);
     }
 
-    let manifest = files
+    // A download may be a bundle whose components each carry their own
+    // manifest. Keep every manifest and later select the closest ancestor of
+    // each detected payload. A single/root manifest still applies to the
+    // whole archive, preserving the original manifest layout.
+    let manifests: Vec<(PathBuf, ModManifest)> = files
         .iter()
-        .find(|p| named(p, "zcom-mod.json"))
-        .and_then(|p| fs::read_to_string(p).ok())
-        .and_then(|t| serde_json::from_str::<ModManifest>(&t).ok());
-    if let Some(manifest) = &manifest {
+        .filter(|path| named(path, "zcom-mod.json"))
+        .filter_map(|path| {
+            fs::read_to_string(path)
+                .ok()
+                .and_then(|text| serde_json::from_str::<ModManifest>(&text).ok())
+                .map(|manifest| (path.parent().unwrap_or(root).to_path_buf(), manifest))
+        })
+        .collect();
+    for (_, manifest) in &manifests {
         if manifest.schema_version != 1 {
             return Err(AppError::Other(format!(
                 "Unsupported zcom-mod.json schema version {}.",
@@ -633,19 +642,32 @@ fn collect(
         ));
     }
 
-    let tested = manifest
-        .as_ref()
-        .and_then(|m| m.game.as_ref())
-        .map(|g| g.tested_builds.clone())
-        .unwrap_or_default();
-    let (compatibility, compatibility_message) = compatibility(
-        game_build,
-        &tested,
-        manifest.as_ref().and_then(|m| m.game.as_ref()),
-    );
     let single = buckets.len() == 1;
     let mut result = Vec::new();
     for bucket in buckets {
+        let manifest = manifests
+            .iter()
+            .filter(|(directory, _)| {
+                bucket
+                    .files
+                    .iter()
+                    .all(|file| file.source.starts_with(directory))
+            })
+            .max_by_key(|(directory, _)| directory.components().count())
+            .map(|(_, manifest)| manifest)
+            // Older archives sometimes placed their only manifest beside,
+            // rather than above, the payload. Retain that permissive behavior
+            // when there is no ambiguity.
+            .or_else(|| (manifests.len() == 1).then(|| &manifests[0].1));
+        let tested = manifest
+            .and_then(|manifest| manifest.game.as_ref())
+            .map(|game| game.tested_builds.clone())
+            .unwrap_or_default();
+        let (compatibility, compatibility_message) = compatibility(
+            game_build,
+            &tested,
+            manifest.and_then(|value| value.game.as_ref()),
+        );
         // The archive name is what the person downloaded and recognizes, so it
         // wins whenever it can only mean this one mod. A manifest still wins
         // over both, and every name can be edited before installing.
@@ -653,7 +675,7 @@ fn collect(
             .option_label
             .as_ref()
             .and(bucket.intrinsic_name.clone())
-            .or_else(|| manifest.as_ref().map(|m| m.name.clone()))
+            .or_else(|| manifest.map(|m| m.name.clone()))
             .or_else(|| {
                 if single {
                     source_name.clone()
@@ -719,11 +741,10 @@ fn collect(
             source_archive: source.display().to_string(),
             name: name.clone(),
             version: manifest
-                .as_ref()
                 .and_then(|m| m.version.clone())
                 .or_else(|| source_version.clone()),
-            author: manifest.as_ref().and_then(|m| m.author.clone()),
-            description: manifest.as_ref().and_then(|m| m.description.clone()),
+            author: manifest.and_then(|m| m.author.clone()),
+            description: manifest.and_then(|m| m.description.clone()),
             mod_type: bucket.kind.into(),
             deployment_keys: bucket.keys.clone(),
             files: bucket.files.clone(),
@@ -1019,6 +1040,49 @@ mod tests {
         assert_eq!(kinds, vec!["ue4ss", "pak"]);
         assert_eq!(found[0].1.name, "Extra");
         assert_eq!(found[1].1.name, "Cool");
+    }
+
+    #[test]
+    fn applies_nested_manifests_to_their_bundle_components() {
+        let s = tempdir().unwrap();
+        let c = tempdir().unwrap();
+        write(&s.path().join("Core/SquadSix_P.pak"), b"pak");
+        write(
+            &s.path().join("Core/zcom-mod.json"),
+            br#"{
+              "schemaVersion": 1,
+              "id": "community.squad-six.core",
+              "name": "Squad Six - Core",
+              "version": "2.0.0",
+              "game": { "appId": 2075800, "testedBuilds": ["core-build"] },
+              "type": ["pak"]
+            }"#,
+        );
+        write(
+            &s.path().join("Runtime/ZCOMSquadSix/Scripts/main.lua"),
+            b"return {}",
+        );
+        write(
+            &s.path().join("Runtime/zcom-mod.json"),
+            br#"{
+              "schemaVersion": 1,
+              "id": "community.squad-six.runtime",
+              "name": "Squad Six - Runtime",
+              "version": "2.0.0",
+              "game": { "appId": 2075800, "testedBuilds": ["runtime-build"] },
+              "type": ["ue4ss"]
+            }"#,
+        );
+
+        let found = scan(s.path(), c.path(), &tool(), None, true, false).unwrap();
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].1.name, "Squad Six - Runtime");
+        assert_eq!(found[0].1.tested_builds, vec!["runtime-build"]);
+        assert_eq!(found[1].1.name, "Squad Six - Core");
+        assert_eq!(found[1].1.tested_builds, vec!["core-build"]);
+        assert!(found
+            .iter()
+            .all(|(_, preview)| preview.version.as_deref() == Some("2.0.0")));
     }
 
     #[test]

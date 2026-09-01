@@ -175,6 +175,34 @@ export default function App() {
       if (remaining.length === 0) setPage("mods");
     } catch (e) { notify(friendlyError(e), "error"); } finally { setInstalling(null); }
   }
+  async function installAll(selected: ModPreview[]) {
+    setInstalling("all");
+    let completed = 0;
+    const components = [...selected].sort((left, right) => {
+      const rank = (preview: ModPreview) => preview.modType === "ue4ss" ? 1 : 0;
+      return rank(left) - rank(right);
+    });
+    try {
+      for (const preview of components) {
+        await backend.install(preview.stagingId, names[preview.stagingId], preview.replaces?.modId);
+        completed += 1;
+        const remaining = previewsRef.current.filter(item => item.stagingId !== preview.stagingId);
+        previewsRef.current = remaining;
+        setPreviews(remaining);
+      }
+      await refresh();
+      notify(components.some(preview => preview.replaces)
+        ? `Updated all ${completed} components safely.`
+        : `Installed all ${completed} components safely.`);
+      setPage("mods");
+    } catch (e) {
+      await refresh();
+      const prefix = completed ? `${completed} component${completed === 1 ? "" : "s"} completed; ` : "";
+      notify(`${prefix}${friendlyError(e)}`, "error");
+    } finally {
+      setInstalling(null);
+    }
+  }
   async function installRuntimeFrom(preview: ModPreview) {
     setInstalling(preview.stagingId);
     try { await applyUe4ssPackage(preview.sourcePath); await discardPreviews(); }
@@ -280,7 +308,7 @@ export default function App() {
   return <Shell page={page} onPage={setPage} gameReady={dashboard.game.detected} updateAvailable={update?.updateAvailable === true}>
     {page === "home" && <HomePage data={dashboard} onInstall={() => setPage("install")} onDiagnose={() => setPage("diagnostics")} onLocate={locateGame} onOpenMods={() => void openFolder("mods")} onOpenGame={() => void openFolder("game")} onLaunchGame={() => void launchGame()} onGetUe4ss={() => openExternal(links.ue4ssDownload)} onInstallUe4ss={() => void installUe4ss()} busy={loading} launching={launching} canLaunch={dashboard.game.detected || !!settings.customExecutablePath} existingModsFound={existingPrompt ? (existingScan?.candidates.length ?? 0) + (existingScan?.unsupported.length ?? 0) : 0} onDismissExisting={() => setExistingPrompt(false)} onReviewExisting={() => { setExistingPrompt(false); setPage("mods"); setExistingReview(true); }} />}
     {page === "mods" && <ModsPage mods={mods} loadOrder={loadOrder} orderPreview={orderPreview} orderBusy={orderBusy} onPreviewOrder={ids => void previewOrder(ids)} onApplyOrder={ids => void applyOrder(ids)} onApplyUe4ssOrder={ids => void applyUe4ssOrder(ids)} onCancelOrder={() => setOrderPreview(null)} onBrowseNexus={() => openExternal(links.nexusGame)} busy={busyMod} onInstall={() => setPage("install")} onDiscover={() => void discoverExisting(true)} discovering={discoveringExisting} onToggle={toggle} onUninstall={uninstall} onVerify={verify} onRename={rename} onOpenInstalled={mod => void openFolder(`installed:${mod.id}`)} onOpenSource={mod => void openFolder(`mod:${mod.id}`)} />}
-    {page === "install" && <InstallPage previews={previews} names={names} loading={loading} download={download} advanced={advanced} installing={installing} onAdvanced={() => setAdvanced(!advanced)} onName={(stagingId, name) => setNames(current => ({ ...current, [stagingId]: name }))} onChooseFile={() => void choose({ filters: [{ name: "Supported mods", extensions: ["zip", "7z", "rar", "pak", "utoc", "ucas"] }] })} onChooseFolder={() => void choose({ directory: true })} onInstall={mod => void install(mod)} onInstallRuntime={mod => void installRuntimeFrom(mod)} onCancel={() => void discardPreviews()} />}
+    {page === "install" && <InstallPage previews={previews} names={names} loading={loading} download={download} advanced={advanced} installing={installing} onAdvanced={() => setAdvanced(!advanced)} onName={(stagingId, name) => setNames(current => ({ ...current, [stagingId]: name }))} onChooseFile={() => void choose({ filters: [{ name: "Supported mods", extensions: ["zip", "7z", "rar", "pak", "utoc", "ucas"] }] })} onChooseFolder={() => void choose({ directory: true })} onInstall={mod => void install(mod)} onInstallAll={mods => void installAll(mods)} onInstallRuntime={mod => void installRuntimeFrom(mod)} onCancel={() => void discardPreviews()} />}
     {page === "diagnostics" && <DiagnosticsPage report={diagnostics} loading={loading} onRun={() => void runDiagnostics()} onCopy={() => void navigator.clipboard.writeText(diagnostics?.text ?? "").then(() => notify("Diagnostic report copied."))} />}
     {page === "settings" && <SettingsPage settings={settings} retoc={dashboard.retoc} onChange={setSettings} onSave={() => void saveSettings()} onPickGame={() => void locateGame()} onPickExecutable={async () => { const picked = await open({ multiple: false, title: "Select game executable or launcher" }); if (typeof picked === "string") setSettings({ ...settings, customExecutablePath: picked }); }} onPickRetoc={async () => { const picked = await open({ multiple: false, title: "Select retoc executable" }); if (typeof picked === "string") setSettings({ ...settings, retocPath: picked }); }} onOpenLogs={() => void openFolder("logs")} onOpenData={() => void openFolder("data")} links={links} onOpenLink={openExternal} nexus={nexus} nexusAccount={nexusAccount} onSaveNexusKey={saveNexusKey} onClearNexusKey={clearNexusKey} onToggleNxmHandler={toggleNxmHandler} />}
     {page === "about" && <AboutPage projectUrl={links.project} onOpenLink={openExternal} update={update} checking={updateChecking} error={updateError} onCheckUpdates={() => void checkUpdates(true)} />}

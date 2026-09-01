@@ -462,7 +462,8 @@ pub fn install_mod(
     ctx: State<'_, AppContext>,
 ) -> Result<ModSummary> {
     let mut staged = previews(&ctx)?
-        .remove(&staging_id)
+        .get(&staging_id)
+        .cloned()
         .ok_or(AppError::PreviewExpired)?;
     if let Some(name) = name
         .map(|name| name.trim().to_string())
@@ -509,7 +510,6 @@ pub fn install_mod(
             game_info.steam_build_id,
         ),
     };
-    release_staging(&ctx, &staged.staging_root);
     let summary = result?;
     if summary.mod_type == "ue4ss" {
         // The recorded start order is the source of truth, so mods.txt is
@@ -539,6 +539,11 @@ pub fn install_mod(
             return Err(error);
         }
     }
+    // Keep a failed preview available for retry. Only a fully successful
+    // deployment consumes its staging id and may release the shared bundle
+    // sandbox.
+    previews(&ctx)?.remove(&staging_id);
+    release_staging(&ctx, &staged.staging_root);
     log(
         &ctx,
         "info",
@@ -1075,9 +1080,12 @@ pub async fn nexus_download(url: String, app: tauri::AppHandle) -> Result<String
 
 #[cfg(test)]
 mod update_tests {
-    use super::{configured_executable, version_is_newer};
-    use crate::models::AppSettings;
-    use std::fs;
+    use super::{configured_executable, replaced_by, version_is_newer};
+    use crate::{
+        database,
+        models::{AppSettings, PayloadFile, StagedMod},
+    };
+    use std::{fs, path::PathBuf};
     use tempfile::tempdir;
 
     #[test]
@@ -1112,5 +1120,58 @@ mod update_tests {
         let error = configured_executable(&settings).unwrap_err().to_string();
         assert!(error.contains("no longer exists"));
         assert!(error.contains("clear it to use Steam"));
+    }
+
+    #[test]
+    fn one_bundle_matches_both_entries_from_an_old_split_install() {
+        let directory = tempdir().unwrap();
+        let connection = database::open(&directory.path().join("mods.sqlite3")).unwrap();
+        connection.execute(
+            "INSERT INTO mods(id,name,version,mod_type,deployment_key,source_archive,installed_at,enabled,load_priority) VALUES('old-core','Squad Six - Core','1.0.1','iostore','','core.zip','now',1,1)",
+            [],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO mod_files(mod_id,library_relative,destination,size,sha256) VALUES('old-core','pakchunk99-ZCOMSquadSix_P.pak','/game/~mods/pakchunk99-ZCOMSquadSix_P.pak',1,'hash')",
+            [],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO mods(id,name,version,mod_type,deployment_key,source_archive,installed_at,enabled,load_priority) VALUES('old-runtime','Squad Six - Runtime','1.0.1','ue4ss','ZCOMSquadSix','runtime.zip','now',1,1)",
+            [],
+        ).unwrap();
+
+        let component = |kind: &str, keys: Vec<String>, files: Vec<PayloadFile>| StagedMod {
+            staging_id: kind.into(),
+            staging_root: PathBuf::from("/staging"),
+            source_archive: "Squad-Six-ZCOM-Manager.zip".into(),
+            name: format!("Squad Six - {kind}"),
+            version: Some("1.1.1".into()),
+            author: None,
+            description: None,
+            mod_type: kind.to_ascii_lowercase(),
+            deployment_keys: keys,
+            files,
+            packages: Vec::new(),
+            verification: "passed".into(),
+            verification_details: None,
+        };
+        let core = component(
+            "IoStore",
+            Vec::new(),
+            vec![PayloadFile {
+                source: PathBuf::from("/staging/Core/pakchunk99-ZCOMSquadSix_P.pak"),
+                library_relative: PathBuf::from("pakchunk99-ZCOMSquadSix_P.pak"),
+                destination_relative: PathBuf::from("pakchunk99-ZCOMSquadSix_P.pak"),
+            }],
+        );
+        let runtime = component("UE4SS", vec!["ZCOMSquadSix".into()], Vec::new());
+
+        assert_eq!(
+            replaced_by(&connection, &core).unwrap().unwrap().mod_id,
+            "old-core"
+        );
+        assert_eq!(
+            replaced_by(&connection, &runtime).unwrap().unwrap().mod_id,
+            "old-runtime"
+        );
     }
 }

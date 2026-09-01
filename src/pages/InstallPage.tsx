@@ -22,6 +22,7 @@ interface Props {
   onChooseFile: () => void;
   onChooseFolder: () => void;
   onInstall: (preview: ModPreview) => void;
+  onInstallAll: (previews: ModPreview[]) => void;
   onInstallRuntime: (preview: ModPreview) => void;
   onCancel: () => void;
 }
@@ -39,7 +40,8 @@ function Candidate({ preview, name, advanced, installing, onName, onAdvanced, on
   onInstall: (preview: ModPreview) => void; onInstallRuntime: (preview: ModPreview) => void;
 }) {
   const runtime = preview.modType === "ue4ss-runtime";
-  const busy = installing === preview.stagingId;
+  const busy = installing !== null;
+  const thisBusy = installing === preview.stagingId || installing === "all";
   const upgrade = preview.replaces;
   return <section className="panel preview-main">
     <div className="preview-title">
@@ -74,16 +76,19 @@ function Candidate({ preview, name, advanced, installing, onName, onAdvanced, on
     {advanced && <div className="advanced"><p>{preview.verificationDetails ?? "No additional tool output."}</p>{preview.packageNames.length > 0 && <><h3>Package paths (spoilers possible)</h3><code>{preview.packageNames.join("\n")}</code></>}</div>}
     <footer className="dialog-actions">
       {runtime
-        ? <button className="primary" onClick={() => onInstallRuntime(preview)} disabled={busy}><Download size={17} />{busy ? "Setting up…" : "Install UE4SS runtime"}</button>
-        : <button className="primary" onClick={() => onInstall(preview)} disabled={!preview.valid || busy}>{upgrade ? <ArrowUpCircle size={17} /> : <ShieldCheck size={17} />}{busy ? (upgrade ? "Replacing…" : "Installing…") : upgrade ? "Replace installed version" : "Install"}</button>}
+        ? <button className="primary" onClick={() => onInstallRuntime(preview)} disabled={busy}><Download size={17} />{thisBusy ? "Setting up…" : "Install UE4SS runtime"}</button>
+        : <button className="primary" onClick={() => onInstall(preview)} disabled={!preview.valid || busy}>{upgrade ? <ArrowUpCircle size={17} /> : <ShieldCheck size={17} />}{thisBusy ? (upgrade ? "Replacing…" : "Installing…") : upgrade ? "Replace installed version" : "Install"}</button>}
     </footer>
   </section>;
 }
 
-export function InstallPage({ previews, names, loading, download, advanced, installing, onAdvanced, onName, onChooseFile, onChooseFolder, onInstall, onInstallRuntime, onCancel }: Props) {
+export function InstallPage({ previews, names, loading, download, advanced, installing, onAdvanced, onName, onChooseFile, onChooseFolder, onInstall, onInstallAll, onInstallRuntime, onCancel }: Props) {
   const many = previews.length > 1;
   const optionCount = previews.filter(preview => preview.optionLabel).length;
   const additionalCount = previews.length - optionCount;
+  const canInstallAll = many
+    && optionCount === 0
+    && previews.every(preview => preview.modType !== "ue4ss-runtime" && preview.valid);
   return <div className="page install-page">
     <header className="page-header"><div><p className="eyebrow">SAFE INSTALLER</p><h1>{previews.length ? "Review mod" : "Install a mod"}</h1><p className="muted">Nothing is deployed until validation succeeds and you confirm.</p></div>{previews.length > 0 && <button onClick={onCancel}><X size={17} />{many ? "Cancel all" : "Cancel"}</button>}</header>
     {previews.length === 0
@@ -97,7 +102,7 @@ export function InstallPage({ previews, names, loading, download, advanced, inst
       </section>
       : <div className="preview-grid">
         <div className="preview-stack">
-          {many && <div className="inline-note" role="status"><b>{optionCount ? `${optionCount} packaged options${additionalCount ? ` and ${additionalCount} additional mod${additionalCount === 1 ? "" : "s"}` : ""} found` : `${previews.length} mods found in this download`}</b><span>{optionCount ? "Each containing folder is a separate version or component. Install only the option or options you want; alternatives may conflict if installed together." : "Each one is named and installed separately. Skip any you do not want by leaving it uninstalled and cancelling the rest."}</span></div>}
+          {many && <div className="inline-note" role="status"><b>{optionCount ? `${optionCount} packaged options${additionalCount ? ` and ${additionalCount} additional mod${additionalCount === 1 ? "" : "s"}` : ""} found` : `${previews.length} components found in this download`}</b><span>{optionCount ? "Each containing folder is a separate version or component. Install only the option or options you want; alternatives may conflict if installed together." : "Review every component below. You can install the complete bundle at once or install components separately."}</span>{canInstallAll && <button className="primary" onClick={() => onInstallAll(previews)} disabled={installing !== null}><ShieldCheck size={17} />{installing === "all" ? "Installing bundle…" : previews.some(preview => preview.replaces) ? "Update all components" : "Install all components"}</button>}</div>}
           {previews.map(preview => <Candidate key={preview.stagingId} preview={preview} name={names[preview.stagingId] ?? preview.name} advanced={advanced} installing={installing} onName={onName} onAdvanced={onAdvanced} onInstall={onInstall} onInstallRuntime={onInstallRuntime} />)}
         </div>
         <aside className="panel safety-note"><ShieldCheck aria-hidden /><h2>Safe by default</h2><p>The manager keeps its own source copy, deploys only recognized payload files, and records a SHA-256 checksum for every destination.</p><ul><li>No executables are run</li><li>Unknown files are ignored</li><li>Partial installs roll back</li><li>Replaced game files are kept and restored</li><li>Changed files are kept on removal</li></ul></aside>

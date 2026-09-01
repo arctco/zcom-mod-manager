@@ -20,17 +20,25 @@ function props(overrides: Partial<Parameters<typeof InstallPage>[0]> = {}): Para
   return {
     previews: [], names: {}, loading: false, download: null, advanced: false, installing: null,
     onAdvanced: vi.fn(), onName: vi.fn(), onChooseFile: vi.fn(), onChooseFolder: vi.fn(),
-    onInstall: vi.fn(), onInstallRuntime: vi.fn(), onCancel: vi.fn(), ...overrides
+    onInstall: vi.fn(), onInstallAll: vi.fn(), onInstallRuntime: vi.fn(), onCancel: vi.fn(), ...overrides
   };
 }
 
 describe("install preview", () => {
   it("offers every mod an archive contains", () => {
     render(<InstallPage {...props({ previews: [preview("a", "ShadowsCore"), preview("b", "ShadowsTweaks")] })} />);
-    expect(screen.getByText("2 mods found in this download")).toBeDefined();
+    expect(screen.getByText("2 components found in this download")).toBeDefined();
     const fields = screen.getAllByLabelText("Mod name") as HTMLInputElement[];
     expect(fields.map(field => field.value)).toEqual(["ShadowsCore", "ShadowsTweaks"]);
     expect(screen.getAllByRole("button", { name: "Install" })).toHaveLength(2);
+  });
+
+  it("offers one action for every required component in a bundle", async () => {
+    const onInstallAll = vi.fn();
+    const mods = [preview("a", "Squad Six - Runtime"), preview("b", "Squad Six - Core", "iostore")];
+    render(<InstallPage {...props({ previews: mods, onInstallAll })} />);
+    await userEvent.click(screen.getByRole("button", { name: "Install all components" }));
+    expect(onInstallAll).toHaveBeenCalledWith(mods);
   });
 
   it("labels mutually selectable packaged folders clearly", () => {
@@ -82,5 +90,18 @@ describe("upgrades", () => {
     expect(screen.getByText("Replaces ZC Unlocked 1.2")).toBeDefined();
     await userEvent.click(screen.getByRole("button", { name: "Replace installed version" }));
     expect(onInstall).toHaveBeenCalledWith(upgrade);
+  });
+
+  it("offers to update every component when a bundle matches old installs", () => {
+    const core = {
+      ...preview("core", "Squad Six - Core", "iostore"),
+      replaces: { modId: "old-core", name: "Squad Six - Core", version: "1.0.1", reason: "It ships the same container files." }
+    };
+    const runtime = {
+      ...preview("runtime", "Squad Six - Runtime"),
+      replaces: { modId: "old-runtime", name: "Squad Six - Runtime", version: "1.0.1", reason: "It uses the same UE4SS mod folder." }
+    };
+    render(<InstallPage {...props({ previews: [core, runtime] })} />);
+    expect(screen.getByRole("button", { name: "Update all components" })).toBeDefined();
   });
 });

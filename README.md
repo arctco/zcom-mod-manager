@@ -80,6 +80,12 @@ review presents each folder as a labeled option instead of combining every
 variant. Choose only the version or component you want; selected alternatives
 remain separate library entries.
 
+Required components can also ship together in one archive. Put a
+`zcom-mod.json` beside each component's payload; the review applies the nearest
+manifest to that component and offers **Install all components**. On upgrade,
+each component is matched to the installed payload it replaces, even if the old
+components originally came from separate archives.
+
 ### PAK-only mods
 
 A conventional `Example_P.pak` payload is supported and deployed to `~mods`.

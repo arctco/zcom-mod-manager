@@ -2,7 +2,15 @@
 
 All notable changes are documented here.
 
-## Unreleased
+## 0.4.1
+
+- Multi-component archives can carry a separate `zcom-mod.json` beside each
+  component. The install review labels and checks each payload with its own
+  metadata and offers one **Install all components** action for bundles that
+  contain no mutually exclusive options.
+- A bundle upgrade matches and replaces each previously installed component,
+  including components that originally came from separate downloads. Failed
+  installations keep their validated preview available for retry.
 
 ## 0.4.0
 
