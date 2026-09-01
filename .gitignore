@@ -24,5 +24,4 @@ logs/
 release/*.deb
 release/*.AppImage
 testing/
-nexusdescription.txt
-nexus-sticky.bbcode
+packaging/
