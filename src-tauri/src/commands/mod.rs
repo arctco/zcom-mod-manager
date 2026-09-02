@@ -920,11 +920,11 @@ fn move_managed_library_inner(path: String, ctx: &AppContext) -> Result<ManagedL
         .write()
         .map_err(|_| AppError::Other("managed library lock was poisoned".into()))?;
     if paths_are_same(&library, &destination) {
-        return Ok(library_info(&ctx, &library));
+        return Ok(library_info(ctx, &library));
     }
     let source = library.clone();
     copy_library_for_move(&source, &destination)?;
-    let persisted = connection(&ctx).and_then(|conn| {
+    let persisted = connection(ctx).and_then(|conn| {
         if paths_are_same(&destination, &ctx.default_mods_dir) {
             database::delete_setting(&conn, "managed_library_path")
         } else {
@@ -944,19 +944,19 @@ fn move_managed_library_inner(path: String, ctx: &AppContext) -> Result<ManagedL
     *library = destination.clone();
     if let Err(error) = std::fs::remove_dir_all(&source) {
         log(
-            &ctx,
+            ctx,
             "warn",
             "managed_library_old_copy_kept",
             &format!("path={} error={error}", source.display()),
         );
     }
     log(
-        &ctx,
+        ctx,
         "info",
         "managed_library_moved",
         &format!("path={}", destination.display()),
     );
-    Ok(library_info(&ctx, &destination))
+    Ok(library_info(ctx, &destination))
 }
 
 #[tauri::command]
