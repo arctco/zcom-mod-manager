@@ -363,6 +363,16 @@ pub struct AppSettings {
     pub nexus_auto_update_check: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedLibraryInfo {
+    /// The directory that currently holds managed payloads and backups.
+    pub path: String,
+    /// The per-user, non-roaming location used for a new installation.
+    pub default_path: String,
+    pub is_default: bool,
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {

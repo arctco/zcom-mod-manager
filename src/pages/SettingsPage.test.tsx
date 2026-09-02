@@ -21,11 +21,16 @@ function props(overrides: Partial<Parameters<typeof SettingsPage>[0]> = {}): Par
   return {
     settings,
     retoc: { found: true, path: "/bin/retoc", version: "retoc 0.1.5" },
+    managedLibrary: { path: "C:\\ZCOM Mods", defaultPath: "C:\\Users\\Arc\\AppData\\Local\\ZCOM Mods", isDefault: false },
+    movingLibrary: false,
     onChange: vi.fn(),
     onSave: vi.fn(),
     onPickGame: vi.fn(),
     onPickExecutable: vi.fn(),
     onPickRetoc: vi.fn(),
+    onMoveLibrary: vi.fn(),
+    onUseDefaultLibrary: vi.fn(),
+    onOpenLibrary: vi.fn(),
     onOpenLogs: vi.fn(),
     onOpenData: vi.fn(),
     links: { ue4ssDownload: "", nexusGame: "", nexusManager: "", project: "" },
@@ -61,6 +66,20 @@ describe("custom game launcher", () => {
     render(<SettingsPage {...props({ settings: { ...settings, customExecutablePath: null } })} />);
     expect((screen.getByLabelText("Game launch executable or launcher") as HTMLInputElement).value).toBe("Steam default");
     expect(screen.queryByRole("button", { name: "Use Steam" })).toBeNull();
+  });
+});
+
+describe("managed mod library", () => {
+  it("shows the active path and offers a verified move", async () => {
+    const onMoveLibrary = vi.fn();
+    const onUseDefaultLibrary = vi.fn();
+    render(<SettingsPage {...props({ onMoveLibrary, onUseDefaultLibrary })} />);
+
+    expect((screen.getByLabelText("Library folder") as HTMLInputElement).value).toBe("C:\\ZCOM Mods");
+    await userEvent.click(screen.getByRole("button", { name: "Move…" }));
+    await userEvent.click(screen.getByRole("button", { name: "Use Local AppData" }));
+    expect(onMoveLibrary).toHaveBeenCalledOnce();
+    expect(onUseDefaultLibrary).toHaveBeenCalledOnce();
   });
 });
 

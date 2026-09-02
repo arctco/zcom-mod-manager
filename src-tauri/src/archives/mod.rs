@@ -233,9 +233,19 @@ fn extract_7z(source: &Path, destination: &Path, executables: &mut Vec<String>) 
 }
 
 pub fn stage(source: &Path, cache: &Path) -> Result<Staging> {
+    // Explorer and archive utilities can materialize a dropped item a fraction
+    // after WebView2 reports its path. Give that Windows shell handoff a small,
+    // bounded chance to finish before treating the path as gone.
+    #[cfg(target_os = "windows")]
+    for _ in 0..4 {
+        if source.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(75));
+    }
     if !source.exists() {
         return Err(AppError::Other(
-            "The selected source no longer exists.".into(),
+            "The selected source no longer exists. If it was dragged from inside 7-Zip, WinRAR, or another archive window, extract it first or drop the archive itself.".into(),
         ));
     }
     let root = cache.join("staging").join(Uuid::new_v4().to_string());

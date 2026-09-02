@@ -1,5 +1,6 @@
 import { Component, type ReactNode } from "react";
 import { AlertTriangle } from "lucide-react";
+import { backend } from "../services/backend";
 
 interface State {
   error: Error | null;
@@ -16,8 +17,14 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
   }
 
   componentDidCatch(error: Error, info: { componentStack?: string | null }) {
-    // The webview console is where a report can be copied from.
     console.error("Interface error", error, info.componentStack);
+    const context = `userAgent=${navigator.userAgent} viewport=${window.innerWidth}x${window.innerHeight} dpr=${window.devicePixelRatio}`;
+    try {
+      void backend.reportInterfaceError(error.message, [error.stack, info.componentStack].filter(Boolean).join("\n"), context).catch(() => {});
+    } catch {
+      // A missing native bridge must not turn the error reporter into another
+      // interface error (and is expected in browser-only component tests).
+    }
   }
 
   render() {

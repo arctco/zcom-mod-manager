@@ -16,14 +16,19 @@ mod retoc;
 mod steam;
 mod ue4ss;
 
-use std::{collections::HashMap, path::PathBuf, sync::Mutex};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{Mutex, RwLock},
+};
 use tauri::{Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 
 pub struct AppContext {
     data_dir: PathBuf,
     cache_dir: PathBuf,
-    mods_dir: PathBuf,
+    mods_dir: RwLock<PathBuf>,
+    default_mods_dir: PathBuf,
     logs_dir: PathBuf,
     db_path: PathBuf,
     previews: Mutex<HashMap<String, models::StagedMod>>,
@@ -65,9 +70,10 @@ pub fn run() {
             });
             let data_dir = app.path().app_data_dir()?;
             let cache_dir = app.path().app_cache_dir()?;
-            let mods_dir = data_dir.join("mods");
+            let default_mods_dir = app.path().app_local_data_dir()?.join("mods");
+            let legacy_mods_dir = data_dir.join("mods");
             let logs_dir = app.path().app_log_dir()?;
-            for dir in [&data_dir, &cache_dir, &mods_dir, &logs_dir] {
+            for dir in [&data_dir, &cache_dir, &logs_dir] {
                 std::fs::create_dir_all(dir)?
             }
             // Extractions from a previous run are only useful to previews that
@@ -82,6 +88,21 @@ pub fn run() {
                 .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
             let settings = database::settings(&conn)
                 .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
+            let configured_library = database::get_setting(&conn, "managed_library_path")
+                .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?
+                .filter(|path| !path.trim().is_empty())
+                .map(PathBuf::from);
+            // 0.5.0 stored the library below roaming AppData. Keep a populated
+            // legacy library in place until the user chooses to move it, while
+            // new installations use Local AppData so payloads are not roamed.
+            let mods_dir = configured_library.unwrap_or_else(|| {
+                if legacy_mods_dir != default_mods_dir && directory_has_entries(&legacy_mods_dir) {
+                    legacy_mods_dir
+                } else {
+                    default_mods_dir.clone()
+                }
+            });
+            std::fs::create_dir_all(&mods_dir)?;
             let detected = if let Some(path) = settings.game_path.filter(|p| !p.is_empty()) {
                 steam::from_manual(std::path::Path::new(&path)).ok()
             } else {
@@ -105,7 +126,8 @@ pub fn run() {
             app.manage(AppContext {
                 data_dir,
                 cache_dir,
-                mods_dir,
+                mods_dir: RwLock::new(mods_dir),
+                default_mods_dir,
                 logs_dir,
                 db_path,
                 previews: Mutex::new(HashMap::new()),
@@ -152,9 +174,20 @@ pub fn run() {
             commands::get_settings,
             commands::save_settings,
             commands::set_game_path,
+            commands::get_managed_library,
+            commands::move_managed_library,
             commands::open_managed_path,
-            commands::launch_game
+            commands::launch_game,
+            commands::report_interface_error,
+            commands::report_interface_layout
         ])
         .run(tauri::generate_context!())
         .expect("error while running ZCOM Mod Manager");
+}
+
+fn directory_has_entries(path: &Path) -> bool {
+    std::fs::read_dir(path)
+        .ok()
+        .and_then(|mut entries| entries.next())
+        .is_some()
 }

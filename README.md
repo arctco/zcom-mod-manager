@@ -27,7 +27,7 @@ records SHA-256 ownership, and treats Linux/Proton as a first-class platform.
 - PAK-only and UE4SS Lua/DLL mod support
 - Existing-mod discovery and non-destructive adoption for packaged, UE4SS, and
   additive `LogicMods` installations
-- Manager-owned source library plus checksum-guarded deployment records
+- Relocatable manager-owned source library plus checksum-guarded deployment records
 - Enable, disable, hide, verify, and safe uninstall operations
 - Filename and hashed IoStore package conflict detection
 - Conflict-aware packaged-mod load order with preview and rollback
@@ -106,10 +106,11 @@ Both are recognized, in any capitalization, at any nesting depth. An archive
 that ships several mod folders installs each as its own entry, so they can be
 enabled, ordered, and removed separately. UE4SS starts mods in the order
 `mods.txt` lists them, and that order is editable on the Load order tab; the
-runtime's own entries and comments keep their place. UE4SS must already have a healthy Zero Company
-layout. ZCOM Mod Manager does not redistribute UE4SS; drop a downloaded runtime
-package on the installer and it is recognized as the runtime rather than as a
-mod.
+managed block is kept directly before the runtime's `Keybinds` entry, while
+other runtime entries and comments keep their relative order. UE4SS must already
+have a healthy Zero Company layout. ZCOM Mod Manager does not redistribute
+UE4SS; drop a downloaded runtime package on the installer and it is recognized
+as the runtime rather than as a mod.
 
 ### Game-folder mods
 
@@ -324,12 +325,23 @@ WINEDLLOVERRIDES="dwmapi=n,b" %command%
 The application never edits Steam launch options. Flatpak Steam libraries may
 require manual game selection and appropriate filesystem permissions.
 
+When **Launch game** is used from the AppImage, the same Steam URI is opened
+through the host system with AppImage library, Python, and toolkit paths removed
+from the child environment. This prevents a closed Steam client from being
+started against libraries inside the temporary AppImage mount; Steam's own game
+launch options, including MangoHud and `WINEDLLOVERRIDES`, still apply normally.
+
 ## Windows
 
 Steam is not assumed to be on `C:`. Common install roots and configured library
 folders are scanned. The selected directory must contain both
 `SWZeroCompany/Binaries/Win64/SWZeroCompany.exe` and
 `SWZeroCompany/Content/Paks/`.
+
+Managed payloads and backups default to the application's Local AppData folder,
+not roaming AppData. **Settings → Managed mod library** can move them to an
+empty folder on any drive; the manager verifies the copy before switching and
+does not move the files already deployed into the game.
 
 Unsigned builds can trigger SmartScreen. Code signing can be added later
 through standard Tauri signing secrets without changing application behavior.

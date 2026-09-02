@@ -1064,7 +1064,7 @@ mod tests {
         let bravo = install(&mut c, &l, &g, &lua_mod(d.path(), "Bravo", b"b"), None).unwrap();
         assert_eq!(
             fs::read_to_string(&mods_txt).unwrap(),
-            "Keybinds : 1\nAlpha : 1\nBravo : 1\n",
+            "Alpha : 1\nBravo : 1\nKeybinds : 1\n",
             "a new mod starts last"
         );
 
@@ -1073,7 +1073,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             fs::read_to_string(&mods_txt).unwrap(),
-            "Keybinds : 1\nBravo : 1\nAlpha : 1\n"
+            "Bravo : 1\nAlpha : 1\nKeybinds : 1\n"
         );
         assert_eq!(
             state

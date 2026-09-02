@@ -14,11 +14,42 @@ import { ModsPage } from "./pages/ModsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { AboutPage } from "./pages/AboutPage";
 import { backend, friendlyError } from "./services/backend";
-import type { AdoptionGroup, AdoptionReport, AppSettings, Dashboard, DiagnosticReport, DownloadProgress, ExistingModScan, Links, LoadOrderPreview, LoadOrderState, ModPreview, ModSummary, ModUpdate, ModUpdateReport, NexusAccount, NexusStatus, UpdateInfo } from "./types";
+import type { AdoptionGroup, AdoptionReport, AppSettings, Dashboard, DiagnosticReport, DownloadProgress, ExistingModScan, Links, LoadOrderPreview, LoadOrderState, ManagedLibraryInfo, ModPreview, ModSummary, ModUpdate, ModUpdateReport, NexusAccount, NexusStatus, UpdateInfo } from "./types";
 
 const defaultSettings: AppSettings = { gamePath: null, customExecutablePath: null, retocPath: null, logLevel: "normal", advancedPackageNames: false, reducedMotion: false, nexusAutoUpdateCheck: false };
 const defaultLinks: Links = { ue4ssDownload: "", nexusGame: "", nexusManager: "", project: "" };
 const defaultLoadOrder: LoadOrderState = { entries: [], ue4ssEntries: [], activeConflicts: [], potentialConflicts: [], unapplied: false };
+
+/**
+ * WebView2 has occasionally kept a stale CSS viewport height after a mod
+ * action. Fixed-position UI still uses the real window in that state, which is
+ * why the toast in the report reaches the bottom while the shell stops early.
+ * The CSS no longer uses `100vh`; this guard repairs any residual mismatch and
+ * leaves measurements in the application log for a Windows follow-up.
+ */
+function ensureFullViewport(reason: string) {
+  const shell = document.querySelector<HTMLElement>(".shell");
+  if (!shell) return;
+  const bounds = shell.getBoundingClientRect();
+  const expected = window.innerHeight;
+  if (Math.abs(bounds.height - expected) <= 2 && Math.abs(bounds.top) <= 2) return;
+  const main = document.querySelector<HTMLElement>(".main")?.getBoundingClientRect();
+  const context = [
+    `reason=${reason}`,
+    `inner=${window.innerWidth}x${window.innerHeight}`,
+    `client=${document.documentElement.clientWidth}x${document.documentElement.clientHeight}`,
+    `visual=${window.visualViewport ? `${window.visualViewport.width}x${window.visualViewport.height}` : "unavailable"}`,
+    `dpr=${window.devicePixelRatio}`,
+    `shell=${bounds.left},${bounds.top},${bounds.width},${bounds.height}`,
+    `main=${main ? `${main.left},${main.top},${main.width},${main.height}` : "missing"}`,
+  ].join(" ");
+  // Fixed positioning uses the geometry that remained correct for the report's
+  // toast, making this an immediate recovery as well as a diagnostic.
+  shell.style.position = "fixed";
+  shell.style.inset = "0";
+  try { void backend.reportInterfaceLayout(context).catch(() => {}); }
+  catch { /* Browser-only tests do not have the native logging bridge. */ }
+}
 
 export default function App() {
   const [page, setPage] = useState<Page>("home");
@@ -27,6 +58,8 @@ export default function App() {
   const [loadOrder, setLoadOrder] = useState<LoadOrderState>(defaultLoadOrder);
   const [orderPreview, setOrderPreview] = useState<LoadOrderPreview | null>(null);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+  const [managedLibrary, setManagedLibrary] = useState<ManagedLibraryInfo | null>(null);
+  const [movingLibrary, setMovingLibrary] = useState(false);
   const [links, setLinks] = useState<Links>(defaultLinks);
   const [nexus, setNexus] = useState<NexusStatus | null>(null);
   const [nexusAccount, setNexusAccount] = useState<NexusAccount | null>(null);
@@ -65,13 +98,25 @@ export default function App() {
   const notify = (text: string, kind: "ok" | "error" = "ok") => { setToast({ text, kind }); window.setTimeout(() => setToast(null), 4500); };
   const refresh = useCallback(async () => {
     try {
-      const [nextDashboard, nextMods, nextLoadOrder, nextSettings, nextLinks, nextNexus, nextModUpdates] = await Promise.all([backend.dashboard(), backend.mods(), backend.loadOrder(), backend.settings(), backend.links(), backend.nexusStatus(), backend.modUpdates()]);
-      setDashboard(nextDashboard); setMods(nextMods); setLoadOrder(nextLoadOrder); setSettings(nextSettings); setLinks(nextLinks); setNexus(nextNexus); setModUpdates(nextModUpdates);
+      const [nextDashboard, nextMods, nextLoadOrder, nextSettings, nextLinks, nextNexus, nextModUpdates, nextManagedLibrary] = await Promise.all([backend.dashboard(), backend.mods(), backend.loadOrder(), backend.settings(), backend.links(), backend.nexusStatus(), backend.modUpdates(), backend.managedLibrary()]);
+      setDashboard(nextDashboard); setMods(nextMods); setLoadOrder(nextLoadOrder); setSettings(nextSettings); setLinks(nextLinks); setNexus(nextNexus); setModUpdates(nextModUpdates); setManagedLibrary(nextManagedLibrary);
       document.documentElement.dataset.reduceMotion = String(nextSettings.reducedMotion);
     } catch (error) { notify(friendlyError(error), "error"); }
   }, []);
 
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    // Wait through two paints: a toggle updates its busy state, refreshed mod
+    // data, and toast in adjacent React commits.
+    let settledFrame = 0;
+    const frame = window.requestAnimationFrame(() => {
+      settledFrame = window.requestAnimationFrame(() => ensureFullViewport("app-render"));
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (settledFrame) window.cancelAnimationFrame(settledFrame);
+    };
+  }, [busyMod, mods, page]);
   useEffect(() => {
     if (!dashboard?.game.detected || !dashboard.existingModScanPending || automaticDiscoveryStarted.current) return;
     automaticDiscoveryStarted.current = true;
@@ -107,14 +152,17 @@ export default function App() {
 
   async function inspect(path: string) {
     const attempt = ++inspectAttempt.current;
-    setLoading(true); await discardPreviews(); setNames({});
+    setLoading(true);
     try {
       const found = await backend.inspect(path);
       // Another inspection started while this one was reading the archive, so
       // this result is stale: release its sandbox rather than leaving it behind.
       if (attempt !== inspectAttempt.current) { await release(found); return; }
+      const replaced = previewsRef.current;
       previewsRef.current = found;
       setPreviews(found);
+      setNames({});
+      await release(replaced);
     }
     catch (e) { if (attempt === inspectAttempt.current) notify(friendlyError(e), "error"); }
     finally { if (attempt === inspectAttempt.current) setLoading(false); }
@@ -356,6 +404,23 @@ export default function App() {
 
   async function runDiagnostics() { setLoading(true); try { setDiagnostics(await backend.diagnostics()); } catch (e) { notify(friendlyError(e), "error"); } finally { setLoading(false); } }
   async function saveSettings() { try { await backend.saveSettings(settings); await refresh(); notify("Settings saved."); } catch (e) { notify(friendlyError(e), "error"); } }
+  async function moveLibrary(useDefault = false) {
+    if (!managedLibrary) return;
+    let destination = managedLibrary.defaultPath;
+    if (!useDefault) {
+      const picked = await open({ directory: true, multiple: false, title: "Select an empty managed mod library folder" });
+      if (typeof picked !== "string") return;
+      destination = picked;
+    }
+    if (destination === managedLibrary.path) return;
+    if (!window.confirm("Move the managed mod library to this folder? Installed game files are not moved.")) return;
+    setMovingLibrary(true);
+    try {
+      setManagedLibrary(await backend.moveManagedLibrary(destination));
+      notify("Managed mod library moved and verified.");
+    } catch (e) { notify(friendlyError(e), "error"); }
+    finally { setMovingLibrary(false); }
+  }
   async function openFolder(kind: Parameters<typeof backend.openManagedPath>[0]) {
     try { await backend.openManagedPath(kind); }
     catch (e) { notify(friendlyError(e), "error"); }
@@ -388,7 +453,7 @@ export default function App() {
     {page === "mods" && <ModsPage mods={mods} loadOrder={loadOrder} orderPreview={orderPreview} orderBusy={orderBusy} onPreviewOrder={ids => void previewOrder(ids)} onApplyOrder={ids => void applyOrder(ids)} onApplyUe4ssOrder={ids => void applyUe4ssOrder(ids)} onCancelOrder={() => setOrderPreview(null)} onBrowseNexus={() => openExternal(links.nexusGame)} busy={busyMod} onInstall={() => setPage("install")} onDiscover={() => void discoverExisting(true)} discovering={discoveringExisting} onToggle={toggle} onUninstall={uninstall} onVerify={verify} onRename={rename} onOpenInstalled={mod => void openFolder(`installed:${mod.id}`)} onOpenSource={mod => void openFolder(`mod:${mod.id}`)} updates={modUpdates} checkingUpdates={checkingMods} canCheckUpdates={nexus?.hasKey ?? false} directDownload={nexus?.premium ?? false} onCheckUpdates={() => void checkModUpdates(true)} onUpdateMod={update => void updateMod(update)} onLinkMod={(mod, reference) => void linkMod(mod, reference)} onSetModChecked={(mod, checked) => void setModChecked(mod, checked)} onOpenModPage={mod => { if (mod.nexusUrl) openExternal(mod.nexusUrl); }} onSetHidden={(mod, hidden) => void setHidden(mod, hidden)} />}
     {page === "install" && <InstallPage previews={previews} names={names} loading={loading} download={download} advanced={advanced} installing={installing} onAdvanced={() => setAdvanced(!advanced)} onName={(stagingId, name) => setNames(current => ({ ...current, [stagingId]: name }))} onChooseFile={() => void choose({ filters: [{ name: "Supported mods", extensions: ["zip", "7z", "rar", "pak", "utoc", "ucas"] }] })} onChooseFolder={() => void choose({ directory: true })} onInstall={mod => void install(mod)} onInstallAll={mods => void installAll(mods)} onInstallRuntime={mod => void installRuntimeFrom(mod)} onCancel={() => void discardPreviews()} />}
     {page === "diagnostics" && <DiagnosticsPage report={diagnostics} loading={loading} onRun={() => void runDiagnostics()} onCopy={() => void navigator.clipboard.writeText(diagnostics?.text ?? "").then(() => notify("Diagnostic report copied."))} />}
-    {page === "settings" && <SettingsPage settings={settings} retoc={dashboard.retoc} onChange={setSettings} onSave={() => void saveSettings()} onPickGame={() => void locateGame()} onPickExecutable={async () => { const picked = await open({ multiple: false, title: "Select game executable or launcher" }); if (typeof picked === "string") setSettings({ ...settings, customExecutablePath: picked }); }} onPickRetoc={async () => { const picked = await open({ multiple: false, title: "Select retoc executable" }); if (typeof picked === "string") setSettings({ ...settings, retocPath: picked }); }} onOpenLogs={() => void openFolder("logs")} onOpenData={() => void openFolder("data")} links={links} onOpenLink={openExternal} nexus={nexus} nexusAccount={nexusAccount} onSaveNexusKey={saveNexusKey} onClearNexusKey={clearNexusKey} onToggleNxmHandler={toggleNxmHandler} onSetAutoUpdateCheck={setAutoUpdateCheck} />}
+    {page === "settings" && <SettingsPage settings={settings} retoc={dashboard.retoc} managedLibrary={managedLibrary} movingLibrary={movingLibrary} onChange={setSettings} onSave={() => void saveSettings()} onPickGame={() => void locateGame()} onPickExecutable={async () => { const picked = await open({ multiple: false, title: "Select game executable or launcher" }); if (typeof picked === "string") setSettings({ ...settings, customExecutablePath: picked }); }} onPickRetoc={async () => { const picked = await open({ multiple: false, title: "Select retoc executable" }); if (typeof picked === "string") setSettings({ ...settings, retocPath: picked }); }} onMoveLibrary={() => void moveLibrary()} onUseDefaultLibrary={() => void moveLibrary(true)} onOpenLibrary={() => void openFolder("library")} onOpenLogs={() => void openFolder("logs")} onOpenData={() => void openFolder("data")} links={links} onOpenLink={openExternal} nexus={nexus} nexusAccount={nexusAccount} onSaveNexusKey={saveNexusKey} onClearNexusKey={clearNexusKey} onToggleNxmHandler={toggleNxmHandler} onSetAutoUpdateCheck={setAutoUpdateCheck} />}
     {page === "about" && <AboutPage projectUrl={links.project} nexusUrl={links.nexusManager} onOpenLink={openExternal} update={update} checking={updateChecking} error={updateError} onCheckUpdates={() => void checkUpdates(true)} />}
     {discoveringExisting && <div className="scan-indicator" role="status"><span className="spin" />Scanning game folders for existing mods…</div>}
     {existingReview && existingScan && <AdoptionDialog scan={existingScan} busy={adoptingExisting} onClose={() => setExistingReview(false)} onAdopt={adoptExisting} />}

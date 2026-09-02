@@ -8,6 +8,7 @@
 
 use crate::error::{AppError, Result};
 use std::path::Path;
+use std::sync::LazyLock;
 
 /// Zero Company's domain on Nexus Mods. A link for any other game is refused
 /// rather than downloaded, so a stray association cannot make this manager
@@ -291,6 +292,43 @@ pub fn newest_offered(files: &[RemoteFile]) -> Option<&RemoteFile> {
         .max_by_key(|file| (file.uploaded_timestamp, file.file_id))
 }
 
+static DISPLAY_VERSION: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"(?i)\bv?\d+(?:\.\d+)+\b").expect("static version regex is valid")
+});
+
+/// A stable label for one selectable file variant. Authors commonly keep the
+/// display name and change only a `v1.2.3` token between uploads. Numeric
+/// choices such as `150`, `200`, `1x`, and `2x` deliberately remain, as do
+/// `Manual` and `Mod Manager`, because those distinguish independent files.
+fn variant_key(name: &str) -> String {
+    DISPLAY_VERSION
+        .replace_all(name, " ")
+        .to_lowercase()
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Finds the newest currently offered upload in the same selectable file
+/// variant as the exact Nexus file that was installed.
+///
+/// A Nexus page can contain several mutually exclusive `MAIN` files and can
+/// also keep versioned choices under `OPTIONAL`. Comparing every install to one
+/// page-wide newest id therefore creates both false positives and missed
+/// updates. The installed file's display name supplies the lineage; if Nexus no
+/// longer returns that file, no relationship is invented.
+pub fn newest_for_installed(files: &[RemoteFile], installed_file_id: u64) -> Option<&RemoteFile> {
+    let installed = files
+        .iter()
+        .find(|file| file.file_id == installed_file_id)?;
+    let installed_key = variant_key(&installed.name);
+    files
+        .iter()
+        .filter(|file| file.offered() && variant_key(&file.name) == installed_key)
+        .max_by_key(|file| (file.uploaded_timestamp, file.file_id))
+}
+
 /// Whether the offered file is something the installed one does not already
 /// have. Nexus issues file ids in upload order, so a larger one is always later.
 pub fn is_newer(latest_file_id: u64, installed_file_id: u64) -> bool {
@@ -534,6 +572,39 @@ mod tests {
     fn an_optional_extra_is_not_an_upgrade_of_the_mod() {
         let files = [remote(50, 3, 900), remote(20, 1, 200)];
         assert_eq!(newest_offered(&files).unwrap().file_id, 20);
+    }
+
+    #[test]
+    fn update_follows_the_installed_variant_instead_of_another_main_file() {
+        let mut old_150 = remote(10, 4, 100);
+        old_150.name = "More Enemies 150 v0.1.0 - ZCOM Mod Manager".into();
+        let mut new_150 = remote(20, 1, 200);
+        new_150.name = "More Enemies 150 v0.2.0 - ZCOM Mod Manager".into();
+        let mut new_200 = remote(30, 1, 300);
+        new_200.name = "More Enemies 200 v0.2.0 - ZCOM Mod Manager".into();
+        let files = [old_150, new_150, new_200];
+
+        assert_eq!(newest_for_installed(&files, 10).unwrap().file_id, 20);
+        assert_eq!(newest_for_installed(&files, 20).unwrap().file_id, 20);
+    }
+
+    #[test]
+    fn optional_variants_can_receive_their_own_updates() {
+        let mut old_2x = remote(40, 4, 100);
+        old_2x.name = "Stronger with the Force - 2x".into();
+        let mut new_2x = remote(60, 3, 300);
+        new_2x.name = "Stronger with the Force - 2x".into();
+        let mut main_15x = remote(50, 1, 200);
+        main_15x.name = "Stronger with the Force - 1.5x".into();
+        let files = [old_2x, main_15x, new_2x];
+
+        assert_eq!(newest_for_installed(&files, 40).unwrap().file_id, 60);
+    }
+
+    #[test]
+    fn a_missing_installed_file_does_not_invent_a_variant_match() {
+        let files = [remote(20, 1, 200), remote(30, 1, 300)];
+        assert!(newest_for_installed(&files, 10).is_none());
     }
 
     #[test]

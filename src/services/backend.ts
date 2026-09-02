@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AdoptionGroup, AdoptionReport, AppSettings, Dashboard, DiagnosticReport, ExistingModScan, LaunchReport, Links, LoadOrderPreview, LoadOrderState, ModPreview, ModSummary, ModUpdateReport, NexusAccount, NexusStatus, Ue4ssInstallReport, UpdateInfo } from "../types";
+import type { AdoptionGroup, AdoptionReport, AppSettings, Dashboard, DiagnosticReport, ExistingModScan, LaunchReport, Links, LoadOrderPreview, LoadOrderState, ManagedLibraryInfo, ModPreview, ModSummary, ModUpdateReport, NexusAccount, NexusStatus, Ue4ssInstallReport, UpdateInfo } from "../types";
 
 export const backend = {
   dashboard: () => invoke<Dashboard>("get_dashboard"),
@@ -37,9 +37,13 @@ export const backend = {
   settings: () => invoke<AppSettings>("get_settings"),
   saveSettings: (settings: AppSettings) => invoke<void>("save_settings", { settings }),
   setGamePath: (path: string) => invoke<GameInfo>("set_game_path", { path }),
+  managedLibrary: () => invoke<ManagedLibraryInfo>("get_managed_library"),
+  moveManagedLibrary: (path: string) => invoke<ManagedLibraryInfo>("move_managed_library", { path }),
   copyDiagnostics: () => invoke<string>("diagnostic_report"),
-  openManagedPath: (kind: "game" | "mods" | "logs" | "data" | `mod:${string}` | `installed:${string}`) => invoke<void>("open_managed_path", { kind }),
-  launchGame: () => invoke<LaunchReport>("launch_game")
+  openManagedPath: (kind: "game" | "mods" | "logs" | "data" | "library" | `mod:${string}` | `installed:${string}`) => invoke<void>("open_managed_path", { kind }),
+  launchGame: () => invoke<LaunchReport>("launch_game"),
+  reportInterfaceError: (message: string, stack: string | null, context: string) => invoke<void>("report_interface_error", { message, stack, context }),
+  reportInterfaceLayout: (context: string) => invoke<void>("report_interface_layout", { context })
 };
 
 interface GameInfo {

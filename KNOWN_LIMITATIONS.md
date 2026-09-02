@@ -1,4 +1,4 @@
-# Known Limitations — 0.5.0
+# Known Limitations — 0.5.3
 
 - 7z installation uses the open-source 7-Zip command-line program available on
   the host. ZIP support is built in. A missing `7z` produces setup guidance.
@@ -8,11 +8,12 @@
 - UE4SS installation preserves `UE4SS-settings.ini`, `mods.txt`, `mods.json`,
   and every `load_order.txt`. A package shipping newer defaults for those will
   not replace an existing copy; remove yours first to adopt them.
-- Applying a UE4SS start order writes the managed entries as one block after
-  everything the manager does not own. Comments, blank lines, and the runtime's
-  own entries keep their positions, but a managed mod that was hand-placed
-  among them moves into that block. Order among managed mods is preserved, and
-  mods installed before this release keep the order the file already has.
+- Applying a UE4SS start order writes the managed entries as one block directly
+  before the runtime's `Keybinds` block, which Zero Company requires to remain
+  last. Other comments, blank lines, and runtime-owned entries keep their
+  relative order, but a managed mod that was hand-placed elsewhere moves into
+  that block. Order among managed mods is preserved, and mods installed before
+  this release keep the order the file already has.
 - UE4SS starts DLL mods and Lua mods in two separate passes: every DLL mod runs
   as the runtime initializes, and the Lua mods only once the scripting runtime
   exists. Order is therefore settable within each pass, never across them, and

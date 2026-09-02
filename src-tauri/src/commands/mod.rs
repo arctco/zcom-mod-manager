@@ -4,14 +4,14 @@ use crate::{
     load_order,
     models::{
         AdoptionGroup, AdoptionReport, AppSettings, Dashboard, DiagnosticReport, ExistingModScan,
-        GameInfo, LaunchReport, LoadOrderPreview, LoadOrderState, ModPreview, ModSummary,
-        ModUpdate, ModUpdateReport, ReplacedMod, StagedMod,
+        GameInfo, LaunchReport, LoadOrderPreview, LoadOrderState, ManagedLibraryInfo, ModPreview,
+        ModSummary, ModUpdate, ModUpdateReport, ReplacedMod, StagedMod,
     },
     mods, retoc, steam, ue4ss, AppContext,
 };
 use std::{
     path::{Path, PathBuf},
-    sync::MutexGuard,
+    sync::{MutexGuard, RwLockReadGuard},
     time::Duration,
 };
 use tauri::{AppHandle, Manager, State};
@@ -49,6 +49,12 @@ fn previews(
     ctx.previews
         .lock()
         .map_err(|_| AppError::Other("preview state lock was poisoned".into()))
+}
+
+fn mods_dir(ctx: &AppContext) -> Result<RwLockReadGuard<'_, PathBuf>> {
+    ctx.mods_dir
+        .read()
+        .map_err(|_| AppError::Other("managed library lock was poisoned".into()))
 }
 
 fn discoveries(
@@ -136,9 +142,10 @@ pub fn adopt_existing_mods(
         AppError::Other("That discovery expired. Scan the game folders again.".into())
     })?;
     let mut conn = connection(&ctx)?;
+    let library = mods_dir(&ctx)?;
     let report = adoption::adopt(
         &mut conn,
-        &ctx.mods_dir,
+        &library,
         &ctx.data_dir,
         &snapshot,
         &groups,
@@ -243,6 +250,12 @@ pub fn apply_load_order(
 /// them individually.
 #[tauri::command]
 pub fn inspect_mod(path: String, ctx: State<'_, AppContext>) -> Result<Vec<ModPreview>> {
+    log(
+        &ctx,
+        "info",
+        "mod_inspection_started",
+        &format!("source={} exists={}", path, Path::new(&path).exists()),
+    );
     let conn = connection(&ctx)?;
     let settings = database::settings(&conn)?;
     let game = game(&ctx)?;
@@ -258,7 +271,19 @@ pub fn inspect_mod(path: String, ctx: State<'_, AppContext>) -> Result<Vec<ModPr
         game.steam_build_id.as_deref(),
         ue.healthy,
         settings.advanced_package_names,
-    )?;
+    );
+    let found = match found {
+        Ok(found) => found,
+        Err(error) => {
+            log(
+                &ctx,
+                "warn",
+                "mod_inspection_failed",
+                &format!("source={} error={error}", path),
+            );
+            return Err(error);
+        }
+    };
     let mut result = Vec::new();
     let mut held = previews(&ctx)?;
     for (staged, mut preview) in found {
@@ -492,10 +517,11 @@ pub fn install_mod(
         .as_ref()
         .map(|_| ordered_supported(&conn))
         .transpose()?;
+    let library = mods_dir(&ctx)?;
     let result = match replace.as_deref() {
         Some(old_id) => deployment::replace(
             &mut conn,
-            &ctx.mods_dir,
+            &library,
             &game_path,
             old_id,
             &staged,
@@ -504,7 +530,7 @@ pub fn install_mod(
         ),
         None => deployment::install(
             &mut conn,
-            &ctx.mods_dir,
+            &library,
             &game_path,
             &staged,
             game_info.steam_build_id,
@@ -534,8 +560,7 @@ pub fn install_mod(
             &ordered,
             &ctx.data_dir.join("load-order-operation.json"),
         ) {
-            let _ =
-                deployment::uninstall(&conn, &ctx.mods_dir, &summary.id, true, Some(&game_path));
+            let _ = deployment::uninstall(&conn, &library, &summary.id, true, Some(&game_path));
             return Err(error);
         }
     }
@@ -571,7 +596,8 @@ pub fn install_mod(
 pub fn set_mod_enabled(id: String, enabled: bool, ctx: State<'_, AppContext>) -> Result<()> {
     let (_, game_path) = require_game(&ctx)?;
     let conn = connection(&ctx)?;
-    deployment::set_enabled(&conn, &ctx.mods_dir, &game_path, &id, enabled)?;
+    let library = mods_dir(&ctx)?;
+    deployment::set_enabled(&conn, &library, &game_path, &id, enabled)?;
     log(
         &ctx,
         "info",
@@ -604,7 +630,8 @@ pub fn set_mod_hidden(id: String, hidden: bool, ctx: State<'_, AppContext>) -> R
 pub fn uninstall_mod(id: String, force: bool, ctx: State<'_, AppContext>) -> Result<()> {
     let game_path = game(&ctx)?.path.map(PathBuf::from);
     let conn = connection(&ctx)?;
-    deployment::uninstall(&conn, &ctx.mods_dir, &id, force, game_path.as_deref())?;
+    let library = mods_dir(&ctx)?;
+    deployment::uninstall(&conn, &library, &id, force, game_path.as_deref())?;
     log(&ctx, "info", "mod_uninstalled", &format!("mod_id={id}"));
     Ok(())
 }
@@ -772,11 +799,184 @@ pub fn set_game_path(path: String, ctx: State<'_, AppContext>) -> Result<GameInf
     Ok(info)
 }
 
+fn library_info(ctx: &AppContext, path: &Path) -> ManagedLibraryInfo {
+    ManagedLibraryInfo {
+        path: path.display().to_string(),
+        default_path: ctx.default_mods_dir.display().to_string(),
+        is_default: paths_are_same(path, &ctx.default_mods_dir),
+    }
+}
+
+fn paths_are_same(left: &Path, right: &Path) -> bool {
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+#[tauri::command]
+pub fn get_managed_library(ctx: State<'_, AppContext>) -> Result<ManagedLibraryInfo> {
+    let library = mods_dir(&ctx)?;
+    Ok(library_info(&ctx, &library))
+}
+
+/// Copies every managed payload and backup to a verified staging directory,
+/// then swaps that directory into the selected empty destination. The source
+/// is intentionally retained until both the database and in-memory path point
+/// at the completed copy.
+fn copy_library_for_move(source: &Path, destination: &Path) -> Result<()> {
+    if !destination.is_absolute() {
+        return Err(AppError::Other(
+            "Choose an absolute path for the managed mod library.".into(),
+        ));
+    }
+    std::fs::create_dir_all(destination)?;
+    if std::fs::symlink_metadata(source)?.file_type().is_symlink()
+        || std::fs::symlink_metadata(destination)?
+            .file_type()
+            .is_symlink()
+    {
+        return Err(AppError::Other(
+            "A symbolic link cannot be used as a managed library location.".into(),
+        ));
+    }
+    let source_real = std::fs::canonicalize(source)?;
+    let destination_real = std::fs::canonicalize(destination)?;
+    if source_real == destination_real {
+        return Err(AppError::Other(
+            "That folder is already the managed mod library.".into(),
+        ));
+    }
+    if destination_real.starts_with(&source_real) || source_real.starts_with(&destination_real) {
+        return Err(AppError::Other(
+            "The new library cannot contain the current library, or be inside it.".into(),
+        ));
+    }
+    if std::fs::read_dir(destination)?.next().is_some() {
+        return Err(AppError::Other(
+            "The selected library folder is not empty. Create or select an empty folder.".into(),
+        ));
+    }
+    let parent = destination.parent().ok_or_else(|| {
+        AppError::Other("A drive root cannot be used as the managed library folder.".into())
+    })?;
+    let temporary = parent.join(format!(".zcom-library-migration-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&temporary)?;
+    let copied = (|| -> Result<()> {
+        for entry in walkdir::WalkDir::new(source).follow_links(false) {
+            let entry = entry.map_err(|error| {
+                AppError::Other(format!("The managed library could not be read: {error}"))
+            })?;
+            if entry.path() == source {
+                continue;
+            }
+            let relative = entry.path().strip_prefix(source).map_err(|_| {
+                AppError::Other("A managed library entry escaped its source folder.".into())
+            })?;
+            let target = temporary.join(relative);
+            if entry.file_type().is_symlink() {
+                return Err(AppError::Other(format!(
+                    "The managed library contains a symbolic link and was not moved: {}",
+                    relative.display()
+                )));
+            }
+            if entry.file_type().is_dir() {
+                std::fs::create_dir_all(&target)?;
+            } else if entry.file_type().is_file() {
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::copy(entry.path(), &target)?;
+                if crate::deployment::sha256(entry.path())? != crate::deployment::sha256(&target)? {
+                    return Err(AppError::Other(format!(
+                        "Verification failed while copying {}.",
+                        relative.display()
+                    )));
+                }
+            } else {
+                return Err(AppError::Other(format!(
+                    "The managed library contains an unsupported filesystem entry: {}",
+                    relative.display()
+                )));
+            }
+        }
+        std::fs::remove_dir(destination)?;
+        std::fs::rename(&temporary, destination)?;
+        Ok(())
+    })();
+    if copied.is_err() {
+        let _ = std::fs::remove_dir_all(&temporary);
+        if !destination.exists() {
+            let _ = std::fs::create_dir_all(destination);
+        }
+    }
+    copied
+}
+
+fn move_managed_library_inner(path: String, ctx: &AppContext) -> Result<ManagedLibraryInfo> {
+    let destination = PathBuf::from(path.trim());
+    let mut library = ctx
+        .mods_dir
+        .write()
+        .map_err(|_| AppError::Other("managed library lock was poisoned".into()))?;
+    if paths_are_same(&library, &destination) {
+        return Ok(library_info(&ctx, &library));
+    }
+    let source = library.clone();
+    copy_library_for_move(&source, &destination)?;
+    let persisted = connection(&ctx).and_then(|conn| {
+        if paths_are_same(&destination, &ctx.default_mods_dir) {
+            database::delete_setting(&conn, "managed_library_path")
+        } else {
+            database::set_setting(
+                &conn,
+                "managed_library_path",
+                &destination.display().to_string(),
+            )
+        }
+    });
+    if let Err(error) = persisted {
+        // The destination was an empty user-selected folder before this
+        // operation, and contains only the copy just made.
+        let _ = std::fs::remove_dir_all(&destination);
+        return Err(error);
+    }
+    *library = destination.clone();
+    if let Err(error) = std::fs::remove_dir_all(&source) {
+        log(
+            &ctx,
+            "warn",
+            "managed_library_old_copy_kept",
+            &format!("path={} error={error}", source.display()),
+        );
+    }
+    log(
+        &ctx,
+        "info",
+        "managed_library_moved",
+        &format!("path={}", destination.display()),
+    );
+    Ok(library_info(&ctx, &destination))
+}
+
+#[tauri::command]
+pub async fn move_managed_library(path: String, app: AppHandle) -> Result<ManagedLibraryInfo> {
+    // A library may contain gigabytes of payloads. Keep copying and hashing off
+    // the webview event loop so the move screen can repaint and stay usable.
+    tauri::async_runtime::spawn_blocking(move || {
+        let ctx = app.state::<AppContext>();
+        move_managed_library_inner(path, &ctx)
+    })
+    .await
+    .map_err(|error| AppError::Other(format!("The library move task failed: {error}")))?
+}
+
 fn managed_path_for(kind: &str, ctx: &AppContext) -> Result<PathBuf> {
+    let library = mods_dir(ctx)?;
     let path = if let Some(id) = kind.strip_prefix("mod:") {
         let conn = connection(ctx)?;
         database::mod_record(&conn, id)?;
-        let path = ctx.mods_dir.join(id);
+        let path = library.join(id);
         if !path.is_dir() {
             return Err(AppError::Other(
                 "Managed mod source folder was not found.".into(),
@@ -799,11 +999,12 @@ fn managed_path_for(kind: &str, ctx: &AppContext) -> Result<PathBuf> {
         match kind {
             "logs" => ctx.logs_dir.clone(),
             "data" => ctx.data_dir.clone(),
+            "library" => library.clone(),
             "mods" => game(ctx)?
                 .path
                 .map(PathBuf::from)
                 .map(|p| p.join("SWZeroCompany/Content/Paks/~mods"))
-                .unwrap_or_else(|| ctx.mods_dir.clone()),
+                .unwrap_or_else(|| library.clone()),
             "game" => game(ctx)?
                 .path
                 .map(PathBuf::from)
@@ -872,6 +1073,19 @@ pub fn launch_game(app: AppHandle, ctx: State<'_, AppContext>) -> Result<LaunchR
         });
     }
     require_game(&ctx)?;
+    #[cfg(target_os = "linux")]
+    if steam::running_from_appimage() {
+        steam::launch_from_appimage()?;
+        log(
+            &ctx,
+            "info",
+            "game_launch_requested",
+            "source=steam_uri appimage_environment=sanitized",
+        );
+        return Ok(LaunchReport {
+            method: "steam".into(),
+        });
+    }
     app.opener()
         .open_url(steam::launch_url(), None::<String>)
         .map_err(|error| AppError::Other(format!("Steam could not launch the game: {error}")))?;
@@ -894,6 +1108,31 @@ pub fn log(ctx: &AppContext, level: &str, event: &str, detail: &str) {
     {
         let _ = writeln!(file, "{record}");
     }
+}
+
+#[tauri::command]
+pub fn report_interface_error(
+    message: String,
+    stack: Option<String>,
+    context: String,
+    ctx: State<'_, AppContext>,
+) {
+    let truncate = |value: &str, limit: usize| value.chars().take(limit).collect::<String>();
+    let detail = format!(
+        "message={} stack={} context={}",
+        truncate(&message, 4_000),
+        truncate(stack.as_deref().unwrap_or(""), 12_000),
+        truncate(&context, 2_000)
+    );
+    log(&ctx, "error", "interface_error", &detail);
+}
+
+/// Records the dimensions from a WebView layout mismatch without treating it
+/// as a JavaScript crash. The frontend also repairs the shell immediately.
+#[tauri::command]
+pub fn report_interface_layout(context: String, ctx: State<'_, AppContext>) {
+    let detail = context.chars().take(2_000).collect::<String>();
+    log(&ctx, "warn", "interface_layout_repaired", &detail);
 }
 
 /// What Settings needs to describe the Nexus connection without revealing the
@@ -1189,7 +1428,8 @@ fn checked_recently(recorded: Option<String>) -> bool {
 }
 
 /// Builds the report from what is already recorded. No network access: an
-/// update is a stored newest-file id that is later than the installed one.
+/// update is the stored newest id for that exact installed file's variant when
+/// it is later than the installed one.
 fn update_report(
     conn: &rusqlite::Connection,
     from_cache: bool,
@@ -1200,7 +1440,7 @@ fn update_report(
     let latest = database::nexus_latest(conn)?;
     let mut updates = Vec::new();
     for install in &installs {
-        let Some(known) = latest.get(&install.nexus_mod_id) else {
+        let Some(known) = latest.get(&(install.nexus_mod_id, install.nexus_file_id)) else {
             continue;
         };
         if !crate::nexus::is_newer(known.latest_file_id, install.nexus_file_id) {
@@ -1323,19 +1563,22 @@ pub async fn link_mod_to_nexus(
     let files = crate::nexus::files(&api_key, nexus_mod_id).await?;
     let file = crate::nexus::file_for_version(&files, installed_version.as_deref())
         .ok_or_else(|| AppError::Other("That Nexus mod offers no files to match.".into()))?;
-    let latest = crate::nexus::newest_offered(&files).map(|newest| database::NexusLatest {
-        latest_file_id: newest.file_id,
-        latest_version: newest.version.clone(),
-        latest_file_name: newest.file_name.clone(),
-        checked_at: chrono::Utc::now().to_rfc3339(),
+    let latest = crate::nexus::newest_for_installed(&files, file.file_id).map(|newest| {
+        database::NexusLatest {
+            latest_file_id: newest.file_id,
+            latest_version: newest.version.clone(),
+            latest_file_name: newest.file_name.clone(),
+            checked_at: chrono::Utc::now().to_rfc3339(),
+        }
     });
     let ctx = app.state::<AppContext>();
     let conn = database::open(&ctx.db_path)?;
     // Naming a page is an instruction to check it, whatever was decided before.
     database::set_nexus_checked(&conn, &mod_id, true)?;
     database::set_nexus_ids(&conn, &mod_id, nexus_mod_id, file.file_id)?;
+    database::clear_nexus_latest_for_file(&conn, nexus_mod_id, file.file_id)?;
     if let Some(latest) = latest {
-        database::record_nexus_latest(&conn, nexus_mod_id, &latest)?;
+        database::record_nexus_latest(&conn, nexus_mod_id, file.file_id, &latest)?;
     }
     log(
         &ctx,
@@ -1448,33 +1691,48 @@ pub async fn check_mod_updates(force: bool, app: AppHandle) -> Result<ModUpdateR
     // recognised here is checked in this same pass. An archive Nexus has
     // already refused is offered again only when the user asked for the check.
     let (identified, mut problem) = identify_untracked(&app, &api_key, force).await?;
-    let targets = {
+    let (installs, targets) = {
         let ctx = app.state::<AppContext>();
         let conn = database::open(&ctx.db_path)?;
-        let mut targets: Vec<u64> = database::nexus_installs(&conn)?
+        let installs = database::nexus_installs(&conn)?;
+        let mut targets: Vec<u64> = installs
             .iter()
             .map(|install| install.nexus_mod_id)
             .collect();
         targets.sort_unstable();
         // One request per Nexus mod, however many local mods came out of it.
         targets.dedup();
-        targets
+        (installs, targets)
     };
-    let mut found: Vec<(u64, database::NexusLatest)> = Vec::new();
+    let mut found: Vec<(u64, u64, database::NexusLatest)> = Vec::new();
+    let mut successful = Vec::new();
     let mut failed = 0usize;
     for nexus_mod_id in targets.iter().take_while(|_| problem.is_none()) {
         match crate::nexus::files(&api_key, *nexus_mod_id).await {
             Ok(files) => {
-                if let Some(file) = crate::nexus::newest_offered(&files) {
-                    found.push((
-                        *nexus_mod_id,
-                        database::NexusLatest {
-                            latest_file_id: file.file_id,
-                            latest_version: file.version.clone(),
-                            latest_file_name: file.file_name.clone(),
-                            checked_at: String::new(),
-                        },
-                    ));
+                successful.push(*nexus_mod_id);
+                let mut installed_file_ids: Vec<u64> = installs
+                    .iter()
+                    .filter(|install| install.nexus_mod_id == *nexus_mod_id)
+                    .map(|install| install.nexus_file_id)
+                    .collect();
+                installed_file_ids.sort_unstable();
+                installed_file_ids.dedup();
+                for installed_file_id in installed_file_ids {
+                    if let Some(file) =
+                        crate::nexus::newest_for_installed(&files, installed_file_id)
+                    {
+                        found.push((
+                            *nexus_mod_id,
+                            installed_file_id,
+                            database::NexusLatest {
+                                latest_file_id: file.file_id,
+                                latest_version: file.version.clone(),
+                                latest_file_name: file.file_name.clone(),
+                                checked_at: String::new(),
+                            },
+                        ));
+                    }
                 }
             }
             // Stopping on a rate limit or a rejected key keeps the remaining
@@ -1502,10 +1760,14 @@ pub async fn check_mod_updates(force: bool, app: AppHandle) -> Result<ModUpdateR
         database::set_setting(&conn, "nexus_account_name", &account.name)?;
         database::set_setting(&conn, "nexus_premium", &account.premium.to_string())?;
     }
-    for (nexus_mod_id, latest) in &found {
+    for nexus_mod_id in successful {
+        database::clear_nexus_latest(&conn, nexus_mod_id)?;
+    }
+    for (nexus_mod_id, installed_file_id, latest) in &found {
         database::record_nexus_latest(
             &conn,
             *nexus_mod_id,
+            *installed_file_id,
             &database::NexusLatest {
                 checked_at: now.clone(),
                 ..latest.clone()
@@ -1537,7 +1799,8 @@ pub async fn check_mod_updates(force: bool, app: AppHandle) -> Result<ModUpdateR
 #[cfg(test)]
 mod update_tests {
     use super::{
-        checked_recently, configured_executable, replaced_by, update_report, version_is_newer,
+        checked_recently, configured_executable, copy_library_for_move, replaced_by, update_report,
+        version_is_newer,
     };
     use crate::{
         database,
@@ -1552,6 +1815,55 @@ mod update_tests {
         assert!(version_is_newer("0.1.10", "0.1.9"));
         assert!(!version_is_newer("v0.1.4", "0.1.4"));
         assert!(!version_is_newer("0.1.3", "0.1.4"));
+    }
+
+    #[test]
+    fn a_library_move_is_verified_before_the_destination_replaces_the_empty_folder() {
+        let directory = tempdir().unwrap();
+        let source = directory.path().join("old-library");
+        let destination = directory.path().join("new-library");
+        fs::create_dir_all(source.join("mod-a/payload")).unwrap();
+        fs::create_dir(&destination).unwrap();
+        fs::write(source.join("mod-a/payload/mod.pak"), b"managed payload").unwrap();
+
+        copy_library_for_move(&source, &destination).unwrap();
+
+        assert_eq!(
+            fs::read(destination.join("mod-a/payload/mod.pak")).unwrap(),
+            b"managed payload"
+        );
+        assert!(source.join("mod-a/payload/mod.pak").is_file());
+    }
+
+    #[test]
+    fn a_library_move_refuses_to_mix_with_an_existing_folder() {
+        let directory = tempdir().unwrap();
+        let source = directory.path().join("old-library");
+        let destination = directory.path().join("not-empty");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&destination).unwrap();
+        fs::write(destination.join("user-file.txt"), b"keep me").unwrap();
+
+        let error = copy_library_for_move(&source, &destination)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("not empty"));
+        assert!(destination.join("user-file.txt").is_file());
+    }
+
+    #[test]
+    fn a_library_copy_never_treats_its_source_as_a_completed_move() {
+        let directory = tempdir().unwrap();
+        let source = directory.path().join("library");
+        fs::create_dir(&source).unwrap();
+
+        let error = copy_library_for_move(&source, &source)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("already"));
+        assert!(source.is_dir());
     }
 
     /// An installed mod that arrived through the handoff, recorded the way the
@@ -1606,13 +1918,13 @@ mod update_tests {
         installed_from_nexus(&conn, "unlocked", "/cache/unlocked.zip", 34, 200);
         // The same file that is installed, and an older one, are not updates.
         for known in [latest(200, "1.3"), latest(180, "1.2")] {
-            database::record_nexus_latest(&conn, 34, &known).unwrap();
+            database::record_nexus_latest(&conn, 34, 200, &known).unwrap();
             assert!(update_report(&conn, true, 0, None)
                 .unwrap()
                 .updates
                 .is_empty());
         }
-        database::record_nexus_latest(&conn, 34, &latest(260, "1.4")).unwrap();
+        database::record_nexus_latest(&conn, 34, 200, &latest(260, "1.4")).unwrap();
         let report = update_report(&conn, true, 0, None).unwrap();
         assert_eq!(report.tracked, 1);
         let update = &report.updates[0];
@@ -1633,10 +1945,26 @@ mod update_tests {
         // provenance of the file it came from.
         installed_from_nexus(&conn, "core", "/cache/suite.zip", 9, 100);
         installed_from_nexus(&conn, "extras", "/cache/suite.zip", 9, 100);
-        database::record_nexus_latest(&conn, 9, &latest(150, "2.0")).unwrap();
+        database::record_nexus_latest(&conn, 9, 100, &latest(150, "2.0")).unwrap();
         let report = update_report(&conn, true, 0, None).unwrap();
         assert_eq!(report.updates.len(), 2);
         assert_eq!(report.tracked, 2);
+    }
+
+    #[test]
+    fn cached_updates_are_scoped_to_the_installed_file_variant() {
+        let directory = tempdir().unwrap();
+        let conn = database::open(&directory.path().join("db.sqlite3")).unwrap();
+        installed_from_nexus(&conn, "one-fifty", "/cache/150.zip", 77, 100);
+        installed_from_nexus(&conn, "two-hundred", "/cache/200.zip", 77, 200);
+        database::record_nexus_latest(&conn, 77, 100, &latest(150, "0.2.0")).unwrap();
+        database::record_nexus_latest(&conn, 77, 200, &latest(200, "0.2.0")).unwrap();
+
+        let report = update_report(&conn, true, 0, None).unwrap();
+
+        assert_eq!(report.updates.len(), 1);
+        assert_eq!(report.updates[0].mod_id, "one-fifty");
+        assert_eq!(report.updates[0].latest_file_id, 150);
     }
 
     #[test]
@@ -1705,7 +2033,7 @@ mod update_tests {
             true,
         )
         .unwrap();
-        database::record_nexus_latest(&conn, 34, &latest(260, "1.4")).unwrap();
+        database::record_nexus_latest(&conn, 34, 200, &latest(260, "1.4")).unwrap();
         assert_eq!(
             update_report(&conn, true, 0, None).unwrap().updates.len(),
             1

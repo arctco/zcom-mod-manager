@@ -5940,7 +5940,7 @@ dependencies = [
 
 [[package]]
 name = "zcom-mod-manager"
-version = "0.5.0"
+version = "0.5.3"
 dependencies = [
  "chrono",
  "dirs",

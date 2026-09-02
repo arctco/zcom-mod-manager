@@ -2,6 +2,58 @@
 
 All notable changes are documented here.
 
+## 0.5.3
+
+### Fixed
+
+- Nexus update checks now follow the exact file variant that was installed
+  instead of comparing it with one page-wide newest file. Mods offering several
+  mutually exclusive main or optional files therefore neither report another
+  choice as an update nor miss an update published for an optional variant.
+  Cached results are stored per installed Nexus file and existing false results
+  are replaced on the next check.
+- UE4SS mods are now inserted and ordered before the runtime's `Keybinds` entry.
+  Existing managed entries found below it are moved above it on the next toggle
+  or load-order apply, while the runtime comment attached to `Keybinds` remains
+  attached.
+- Dragging a mod into the installer now starts native inspection before any
+  previous preview is discarded. A failed or transient drop therefore keeps
+  the usable preview on screen, and successful inspection swaps previews only
+  after the new source is staged. Windows shell drops receive a short bounded
+  retry, and drops from inside 7-Zip or WinRAR explain that the archive itself
+  should be dropped or extracted first. Received paths and failures are written
+  to the sanitized application log for diagnosis.
+- Launching Steam from the Linux AppImage no longer passes the mounted image's
+  libraries, Python runtime, or GTK/GIO/Qt plugin paths into Steam. The manager
+  opens the same `steam://run/2075800` address through the host `xdg-open` with
+  a rebuilt environment, so Steam still applies the game's configured launch
+  options without inheriting `/tmp/.mount_*` dependencies.
+- Reduced the WebView2 composition work implicated in Windows app windows turning
+  dark, stale, or partially displaced after a mod action. Page and toast
+  transform animations, transformed switches, and backdrop blur are gone, and
+  the native webview has an explicit dark background. The application shell is
+  now pinned to the WebView edges instead of relying on `100vh`, fixing the
+  reported state where the sidebar and mod list stopped partway down the window
+  even though a toast still rendered at the real bottom. A post-render guard
+  repairs and logs any remaining height mismatch. JavaScript render errors,
+  uncaught errors, the WebView user agent, viewport details, and repaired layout
+  dimensions are persisted to `application.jsonl` instead of existing only in
+  DevTools.
+- Managed payloads and backups are no longer forced into roaming AppData. New
+  installations use Local AppData, an existing populated 0.5.0 library remains
+  recognized in place, and Settings can move the library to any empty folder.
+  Moves work across drives, hash-verify every copied file before switching,
+  serialize against mod operations, and keep the original until the new path is
+  saved successfully.
+
+### Notes
+
+- Steam launching still uses `steam://run/2075800`, so Steam applies the launch
+  options configured for the game. The Linux AppImage now opens that URI with
+  a sanitized environment. The separate Windows Custom Launch loop report did
+  not identify a manager-side argument or executable fault, so 0.5.3 does not
+  replace the Windows launch mechanism without a reproducible manager-only case.
+
 ## 0.5.0
 
 ### Fixed

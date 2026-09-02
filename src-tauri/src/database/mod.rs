@@ -17,12 +17,14 @@ pub fn open(path: &Path) -> Result<Connection> {
       CREATE TABLE IF NOT EXISTS nexus_sources(archive_path TEXT PRIMARY KEY, nexus_mod_id INTEGER NOT NULL, nexus_file_id INTEGER NOT NULL, version TEXT, file_name TEXT NOT NULL, downloaded_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS nexus_identification(mod_id TEXT PRIMARY KEY REFERENCES mods(id) ON DELETE CASCADE, md5 TEXT NOT NULL, matched INTEGER NOT NULL, attempted_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS nexus_updates(nexus_mod_id INTEGER PRIMARY KEY, latest_file_id INTEGER NOT NULL, latest_version TEXT, latest_file_name TEXT NOT NULL, checked_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS nexus_file_updates(nexus_mod_id INTEGER NOT NULL, installed_file_id INTEGER NOT NULL, latest_file_id INTEGER NOT NULL, latest_version TEXT, latest_file_name TEXT NOT NULL, checked_at TEXT NOT NULL, PRIMARY KEY(nexus_mod_id, installed_file_id));
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(1, datetime('now'));"
     )?;
     migrate_v2(&mut connection)?;
     migrate_v3(&mut connection)?;
     migrate_v4(&mut connection)?;
     migrate_v5(&mut connection)?;
+    migrate_v6(&mut connection)?;
     Ok(connection)
 }
 
@@ -144,6 +146,38 @@ fn migrate_v5(conn: &mut Connection) -> Result<()> {
     }
     transaction.execute(
         "INSERT INTO schema_migrations(version,applied_at) VALUES(5,datetime('now'))",
+        [],
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Stores update results for the exact Nexus file that was installed. A page
+/// can publish several mutually exclusive main or optional files at once, so a
+/// single newest-file row for the whole page cannot describe every install.
+fn migrate_v6(conn: &mut Connection) -> Result<()> {
+    let applied: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=6)",
+        [],
+        |row| row.get(0),
+    )?;
+    if applied {
+        return Ok(());
+    }
+    let transaction = conn.transaction()?;
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS nexus_file_updates(
+           nexus_mod_id INTEGER NOT NULL,
+           installed_file_id INTEGER NOT NULL,
+           latest_file_id INTEGER NOT NULL,
+           latest_version TEXT,
+           latest_file_name TEXT NOT NULL,
+           checked_at TEXT NOT NULL,
+           PRIMARY KEY(nexus_mod_id, installed_file_id)
+         );",
+    )?;
+    transaction.execute(
+        "INSERT INTO schema_migrations(version,applied_at) VALUES(6,datetime('now'))",
         [],
     )?;
     transaction.commit()?;
@@ -335,8 +369,9 @@ pub fn nexus_installs(conn: &Connection) -> Result<Vec<NexusInstall>> {
     Ok(rows)
 }
 
-/// The newest file Nexus offered for a mod when it was last checked, so the
-/// interface can show what it knows without going back to the network.
+/// The newest file Nexus offered in one installed file's variant when it was
+/// last checked, so the interface can show what it knows without going back to
+/// the network.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NexusLatest {
     pub latest_file_id: u64,
@@ -348,15 +383,17 @@ pub struct NexusLatest {
 pub fn record_nexus_latest(
     conn: &Connection,
     nexus_mod_id: u64,
+    installed_file_id: u64,
     latest: &NexusLatest,
 ) -> Result<()> {
     conn.execute(
-        "INSERT INTO nexus_updates(nexus_mod_id,latest_file_id,latest_version,latest_file_name,checked_at) \
-         VALUES(?1,?2,?3,?4,?5) ON CONFLICT(nexus_mod_id) DO UPDATE SET \
+        "INSERT INTO nexus_file_updates(nexus_mod_id,installed_file_id,latest_file_id,latest_version,latest_file_name,checked_at) \
+         VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(nexus_mod_id,installed_file_id) DO UPDATE SET \
          latest_file_id=excluded.latest_file_id,latest_version=excluded.latest_version,\
          latest_file_name=excluded.latest_file_name,checked_at=excluded.checked_at",
         params![
             nexus_mod_id as i64,
+            installed_file_id as i64,
             latest.latest_file_id as i64,
             latest.latest_version,
             latest.latest_file_name,
@@ -366,19 +403,41 @@ pub fn record_nexus_latest(
     Ok(())
 }
 
-pub fn nexus_latest(conn: &Connection) -> Result<BTreeMap<u64, NexusLatest>> {
+/// Clears every cached variant for a Nexus page before replacing the results
+/// from a successful fresh file-list request.
+pub fn clear_nexus_latest(conn: &Connection, nexus_mod_id: u64) -> Result<()> {
+    conn.execute(
+        "DELETE FROM nexus_file_updates WHERE nexus_mod_id=?1",
+        [nexus_mod_id as i64],
+    )?;
+    Ok(())
+}
+
+pub fn clear_nexus_latest_for_file(
+    conn: &Connection,
+    nexus_mod_id: u64,
+    installed_file_id: u64,
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM nexus_file_updates WHERE nexus_mod_id=?1 AND installed_file_id=?2",
+        params![nexus_mod_id as i64, installed_file_id as i64],
+    )?;
+    Ok(())
+}
+
+pub fn nexus_latest(conn: &Connection) -> Result<BTreeMap<(u64, u64), NexusLatest>> {
     let mut statement = conn.prepare(
-        "SELECT nexus_mod_id,latest_file_id,latest_version,latest_file_name,checked_at FROM nexus_updates",
+        "SELECT nexus_mod_id,installed_file_id,latest_file_id,latest_version,latest_file_name,checked_at FROM nexus_file_updates",
     )?;
     let rows = statement
         .query_map([], |row| {
             Ok((
-                row.get::<_, i64>(0)? as u64,
+                (row.get::<_, i64>(0)? as u64, row.get::<_, i64>(1)? as u64),
                 NexusLatest {
-                    latest_file_id: row.get::<_, i64>(1)? as u64,
-                    latest_version: row.get(2)?,
-                    latest_file_name: row.get(3)?,
-                    checked_at: row.get(4)?,
+                    latest_file_id: row.get::<_, i64>(2)? as u64,
+                    latest_version: row.get(3)?,
+                    latest_file_name: row.get(4)?,
+                    checked_at: row.get(5)?,
                 },
             ))
         })?

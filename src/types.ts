@@ -310,6 +310,12 @@ export interface AppSettings {
   nexusAutoUpdateCheck: boolean;
 }
 
+export interface ManagedLibraryInfo {
+  path: string;
+  defaultPath: string;
+  isDefault: boolean;
+}
+
 export interface LaunchReport {
   method: "steam" | "custom-executable";
 }

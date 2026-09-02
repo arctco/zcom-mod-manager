@@ -3,6 +3,11 @@ use crate::{
     models::GameInfo,
 };
 use regex::Regex;
+#[cfg(target_os = "linux")]
+use std::{
+    collections::BTreeMap,
+    ffi::{OsStr, OsString},
+};
 use std::{
     collections::BTreeSet,
     fs,
@@ -13,6 +18,135 @@ pub const APP_ID: &str = "2075800";
 
 pub fn launch_url() -> String {
     format!("steam://run/{APP_ID}")
+}
+
+#[cfg(target_os = "linux")]
+pub fn running_from_appimage() -> bool {
+    std::env::var_os("APPIMAGE").is_some()
+}
+
+#[cfg(target_os = "linux")]
+fn without_appdir_entries(value: &OsStr, appdir: &Path) -> Option<OsString> {
+    let paths = std::env::split_paths(value)
+        .filter(|entry| !entry.starts_with(appdir))
+        .collect::<Vec<_>>();
+    if paths.is_empty() {
+        None
+    } else {
+        std::env::join_paths(paths).ok()
+    }
+}
+
+/// Rebuilds the environment inherited from linuxdeploy's AppRun without the
+/// mounted image's libraries, Python runtime, or toolkit plugins. Passing that
+/// environment to xdg-open can otherwise start Steam against libraries below
+/// `/tmp/.mount_*`, which breaks Steam even after the manager exits.
+#[cfg(target_os = "linux")]
+fn sanitized_appimage_environment<I>(appdir: &Path, environment: I) -> BTreeMap<OsString, OsString>
+where
+    I: IntoIterator<Item = (OsString, OsString)>,
+{
+    let mut clean = environment.into_iter().collect::<BTreeMap<_, _>>();
+    for key in [
+        "APPDIR",
+        "APPIMAGE",
+        "APPIMAGE_EXTRACT_AND_RUN",
+        "APPIMAGE_SILENT_INSTALL",
+        "ARGV0",
+        "OWD",
+        "PYTHONHOME",
+        "PYTHONDONTWRITEBYTECODE",
+        "GTK_DATA_PREFIX",
+        "GTK_THEME",
+        "GDK_BACKEND",
+        "GTK_EXE_PREFIX",
+        "GTK_IM_MODULE_FILE",
+        "GDK_PIXBUF_MODULE_FILE",
+    ] {
+        clean.remove(OsStr::new(key));
+    }
+    for key in [
+        "PATH",
+        "LD_LIBRARY_PATH",
+        "PYTHONPATH",
+        "XDG_DATA_DIRS",
+        "PERLLIB",
+        "GSETTINGS_SCHEMA_DIR",
+        "QT_PLUGIN_PATH",
+        "GST_PLUGIN_SYSTEM_PATH",
+        "GST_PLUGIN_SYSTEM_PATH_1_0",
+        "GTK_PATH",
+        "GIO_EXTRA_MODULES",
+        "GI_TYPELIB_PATH",
+    ] {
+        let key = OsStr::new(key);
+        if let Some(value) = clean.get(key).cloned() {
+            match without_appdir_entries(&value, appdir) {
+                Some(value) => {
+                    clean.insert(key.to_os_string(), value);
+                }
+                None => {
+                    clean.remove(key);
+                }
+            }
+        }
+    }
+    // These accept formats other than a colon-separated path list. Removing
+    // them only when AppRun pointed them into the mount avoids propagating a
+    // bundled loader without discarding an unrelated user override.
+    for key in ["LD_PRELOAD", "LD_AUDIT", "SSL_CERT_FILE", "SSL_CERT_DIR"] {
+        let key = OsStr::new(key);
+        if clean
+            .get(key)
+            .is_some_and(|value| Path::new(value).starts_with(appdir))
+        {
+            clean.remove(key);
+        }
+    }
+    clean
+}
+
+#[cfg(target_os = "linux")]
+fn executable_in_path(name: &str, environment: &BTreeMap<OsString, OsString>) -> Option<PathBuf> {
+    environment
+        .get(OsStr::new("PATH"))
+        .into_iter()
+        .flat_map(|value| std::env::split_paths(value))
+        .map(|directory| directory.join(name))
+        .find(|candidate| candidate.is_file())
+        .or_else(|| {
+            ["/usr/bin", "/bin", "/usr/local/bin"]
+                .into_iter()
+                .map(|directory| Path::new(directory).join(name))
+                .find(|candidate| candidate.is_file())
+        })
+}
+
+#[cfg(target_os = "linux")]
+pub fn launch_from_appimage() -> Result<()> {
+    let appdir = std::env::var_os("APPDIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            AppError::Other(
+                "The AppImage mount directory is unavailable, so Steam was not started with an unsafe environment. Start Steam manually and try again."
+                    .into(),
+            )
+        })?;
+    let environment = sanitized_appimage_environment(&appdir, std::env::vars_os());
+    let opener = executable_in_path("xdg-open", &environment).ok_or_else(|| {
+        AppError::Other(
+            "The system URL opener (xdg-open) was not found. Start Steam manually and launch the game there."
+                .into(),
+        )
+    })?;
+    std::process::Command::new(opener)
+        .arg(launch_url())
+        .env_clear()
+        .envs(environment)
+        .spawn()
+        .map_err(|error| AppError::Other(format!("Steam could not launch the game: {error}")))?;
+    Ok(())
 }
 
 fn quoted_value(text: &str, key: &str) -> Option<String> {
@@ -235,5 +369,49 @@ mod tests {
     #[test]
     fn launch_url_targets_zero_company_through_steam() {
         assert_eq!(launch_url(), "steam://run/2075800");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn appimage_environment_is_removed_without_losing_host_paths() {
+        let appdir = Path::new("/tmp/.mount_ZCOM123");
+        let environment = [
+            ("APPIMAGE", "/downloads/ZCOM.AppImage"),
+            ("APPDIR", "/tmp/.mount_ZCOM123"),
+            ("PYTHONHOME", "/tmp/.mount_ZCOM123/usr"),
+            (
+                "PATH",
+                "/tmp/.mount_ZCOM123/usr/bin:/usr/local/bin:/usr/bin",
+            ),
+            (
+                "LD_LIBRARY_PATH",
+                "/tmp/.mount_ZCOM123/usr/lib:/custom/lib:/usr/lib",
+            ),
+            (
+                "XDG_DATA_DIRS",
+                "/tmp/.mount_ZCOM123/usr/share:/usr/local/share:/usr/share",
+            ),
+            ("DISPLAY", ":0"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (OsString::from(key), OsString::from(value)));
+
+        let clean = sanitized_appimage_environment(appdir, environment);
+
+        assert!(!clean.contains_key(OsStr::new("APPIMAGE")));
+        assert!(!clean.contains_key(OsStr::new("APPDIR")));
+        assert!(!clean.contains_key(OsStr::new("PYTHONHOME")));
+        assert_eq!(
+            clean.get(OsStr::new("PATH")).unwrap(),
+            OsStr::new("/usr/local/bin:/usr/bin")
+        );
+        assert_eq!(
+            clean.get(OsStr::new("LD_LIBRARY_PATH")).unwrap(),
+            OsStr::new("/custom/lib:/usr/lib")
+        );
+        assert_eq!(clean.get(OsStr::new("DISPLAY")).unwrap(), OsStr::new(":0"));
+        assert!(clean
+            .values()
+            .all(|value| !value.to_string_lossy().contains("/tmp/.mount_ZCOM123")));
     }
 }

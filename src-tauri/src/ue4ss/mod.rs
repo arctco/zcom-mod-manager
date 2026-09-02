@@ -202,15 +202,29 @@ fn entry_name(line: &str) -> Option<&str> {
     (!name.is_empty()).then_some(name)
 }
 
+/// The runtime requires user mods to be listed before its Keybinds entry. A
+/// comment immediately attached to Keybinds moves with that anchor so the
+/// manager does not separate the warning from the entry it describes.
+fn keybind_anchor(lines: &[String]) -> Option<usize> {
+    let mut anchor = lines.iter().position(|line| {
+        entry_name(line).is_some_and(|name| name.eq_ignore_ascii_case("Keybinds"))
+    })?;
+    while anchor > 0 && lines[anchor - 1].trim_start().starts_with(';') {
+        anchor -= 1;
+    }
+    Some(anchor)
+}
+
 /// Rewrites the managed block of `mods.txt` in the given order.
 ///
 /// UE4SS starts mods in the order this file lists them, so the order is the
 /// mechanism, not a label. Everything the manager does not own — the comments,
 /// the blank lines, and the runtime's own entries, including the "do not move
 /// up" keybind block — keeps its position and its relative order; the managed
-/// entries are written after it, in the order given. Any managed name already
-/// present elsewhere in the file is removed from that position first, so a mod
-/// is never listed twice.
+/// entries are written immediately before the runtime's Keybinds block, in the
+/// order given. Without Keybinds they are appended as before. Any managed name
+/// already present elsewhere in the file is removed from that position first,
+/// so a mod is never listed twice.
 pub fn write_order(game: &Path, ordered: &[(String, bool)]) -> Result<()> {
     let mods = base(game).join("ue4ss/Mods");
     if !mods.is_dir() {
@@ -236,9 +250,13 @@ pub fn write_order(game: &Path, ordered: &[(String, bool)]) -> Result<()> {
     while output.last().is_some_and(|line| line.trim().is_empty()) {
         output.pop();
     }
-    for (key, enabled) in ordered {
-        output.push(format!("{key} : {}", if *enabled { 1 } else { 0 }));
-    }
+    let insertion = keybind_anchor(&output).unwrap_or(output.len());
+    output.splice(
+        insertion..insertion,
+        ordered
+            .iter()
+            .map(|(key, enabled)| format!("{key} : {}", if *enabled { 1 } else { 0 })),
+    );
     let mut value = output.join(line_ending);
     if !value.is_empty() {
         value.push_str(line_ending)
@@ -259,23 +277,36 @@ pub fn update_mods_txt(game: &Path, name: &str, enabled: bool) -> Result<()> {
     } else {
         "\n"
     };
-    let mut found = false;
+    let mut found_at = None;
     let mut output = Vec::new();
     for line in original.lines() {
         let entry = entry_name(line).unwrap_or("");
         if entry.eq_ignore_ascii_case(name) {
+            if found_at.is_some() {
+                continue;
+            }
             let indentation = &line[..line.len() - line.trim_start().len()];
             output.push(format!(
                 "{indentation}{name} : {}",
                 if enabled { 1 } else { 0 }
             ));
-            found = true
+            found_at = Some(output.len() - 1)
         } else {
             output.push(line.to_string())
         }
     }
-    if !found {
-        output.push(format!("{name} : {}", if enabled { 1 } else { 0 }));
+    let anchor = keybind_anchor(&output);
+    let needs_insertion = found_at.is_none()
+        || anchor.is_some_and(|anchor| found_at.is_some_and(|index| index >= anchor));
+    if needs_insertion {
+        if let Some(index) = found_at {
+            output.remove(index);
+        }
+        let insertion = keybind_anchor(&output).unwrap_or(output.len());
+        output.insert(
+            insertion,
+            format!("{name} : {}", if enabled { 1 } else { 0 }),
+        );
     }
     let mut value = output.join(line_ending);
     if !value.is_empty() {
@@ -453,8 +484,8 @@ mod tests {
 
         assert_eq!(
             fs::read_to_string(mods.join("mods.txt")).unwrap(),
-            "CheatManagerEnablerMod : 1\n\n; Built-in keybinds, do not move up!\nKeybinds : 1\nBravo : 0\nCharlie : 1\nAlpha : 1\n",
-            "runtime entries and comments keep their place; managed mods follow in order"
+            "CheatManagerEnablerMod : 1\n\nBravo : 0\nCharlie : 1\nAlpha : 1\n; Built-in keybinds, do not move up!\nKeybinds : 1\n",
+            "managed mods precede Keybinds while its comment stays attached"
         );
     }
 
@@ -471,7 +502,27 @@ mod tests {
         write_order(d.path(), &[("Alpha".into(), true)]).unwrap();
         assert_eq!(
             fs::read_to_string(mods.join("mods.txt")).unwrap(),
-            "Keybinds : 1\nAlpha : 1\n"
+            "Alpha : 1\nKeybinds : 1\n"
+        );
+    }
+
+    #[test]
+    fn installing_or_toggling_a_mod_keeps_it_before_keybinds() {
+        let d = tempdir().unwrap();
+        let mods = d.path().join("SWZeroCompany/Binaries/Win64/ue4ss/Mods");
+        fs::create_dir_all(&mods).unwrap();
+        fs::write(
+            mods.join("mods.txt"),
+            "; Built-in keybinds, do not move up!\nKeybinds : 1\nExisting : 1\n",
+        )
+        .unwrap();
+
+        update_mods_txt(d.path(), "Existing", false).unwrap();
+        update_mods_txt(d.path(), "NewMod", true).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(mods.join("mods.txt")).unwrap(),
+            "Existing : 0\nNewMod : 1\n; Built-in keybinds, do not move up!\nKeybinds : 1\n"
         );
     }
 
