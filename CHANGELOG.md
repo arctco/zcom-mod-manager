@@ -2,6 +2,24 @@
 
 All notable changes are documented here.
 
+## 0.6.1
+
+### Fixed
+
+- Option images and the installer's header image now appear in released builds.
+  They are handed to the interface as `data:` URLs, which the application's
+  content security policy did not list as an image source, so a released 0.6.0
+  showed every guided installer without its pictures while option names,
+  descriptions, group rules, conditional steps, and the install itself worked
+  normally. `img-src` now allows `data:`, which permits images only and grants
+  no script execution.
+- The policy is injected into the frontend the application embeds, and a
+  development run loads the frontend from the dev server instead, so it is not
+  applied there. That is why the images were present while developing and
+  absent in the released package. A release build is the only place this class
+  of difference can be seen; `devCsp` does not reproduce it while an external
+  `devUrl` is configured.
+
 ## 0.6.0
 
 ### Added
