@@ -6,6 +6,7 @@ mod database;
 mod deployment;
 mod diagnostics;
 mod error;
+mod fomod;
 mod load_order;
 mod models;
 mod mods;
@@ -32,6 +33,8 @@ pub struct AppContext {
     logs_dir: PathBuf,
     db_path: PathBuf,
     previews: Mutex<HashMap<String, models::StagedMod>>,
+    /// Scripted installers waiting on the answers that decide what to install.
+    installers: Mutex<HashMap<String, fomod::Pending>>,
     discoveries: Mutex<HashMap<String, adoption::ScanSnapshot>>,
     previous_build_id: Option<String>,
     /// An `nxm://` link that launched this process. Emitting it during setup
@@ -131,6 +134,7 @@ pub fn run() {
                 logs_dir,
                 db_path,
                 previews: Mutex::new(HashMap::new()),
+                installers: Mutex::new(HashMap::new()),
                 discoveries: Mutex::new(HashMap::new()),
                 previous_build_id,
                 pending_nxm: Mutex::new(std::env::args().find(|arg| arg.starts_with("nxm://"))),
@@ -145,6 +149,9 @@ pub fn run() {
             commands::apply_load_order,
             commands::apply_ue4ss_order,
             commands::inspect_mod,
+            commands::fomod_advance,
+            commands::fomod_install,
+            commands::fomod_cancel,
             commands::discover_existing_mods,
             commands::adopt_existing_mods,
             commands::acknowledge_existing_mod_prompt,

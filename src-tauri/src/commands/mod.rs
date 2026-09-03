@@ -1,11 +1,11 @@
 use crate::{
-    adoption, database, deployment, diagnostics,
+    adoption, archives, database, deployment, diagnostics,
     error::{AppError, Result},
-    load_order,
+    fomod, load_order,
     models::{
         AdoptionGroup, AdoptionReport, AppSettings, Dashboard, DiagnosticReport, ExistingModScan,
-        GameInfo, LaunchReport, LoadOrderPreview, LoadOrderState, ManagedLibraryInfo, ModPreview,
-        ModSummary, ModUpdate, ModUpdateReport, ReplacedMod, StagedMod,
+        GameInfo, Inspection, LaunchReport, LoadOrderPreview, LoadOrderState, ManagedLibraryInfo,
+        ModPreview, ModSummary, ModUpdate, ModUpdateReport, ReplacedMod, StagedMod,
     },
     mods, retoc, steam, ue4ss, AppContext,
 };
@@ -63,6 +63,14 @@ fn discoveries(
     ctx.discoveries
         .lock()
         .map_err(|_| AppError::Other("existing-mod discovery lock was poisoned".into()))
+}
+
+fn installers(
+    ctx: &AppContext,
+) -> Result<MutexGuard<'_, std::collections::HashMap<String, fomod::Pending>>> {
+    ctx.installers
+        .lock()
+        .map_err(|_| AppError::Other("installer state lock was poisoned".into()))
 }
 
 #[tauri::command]
@@ -249,43 +257,103 @@ pub fn apply_load_order(
 /// loader mod. Each is previewed separately so the person can name and install
 /// them individually.
 #[tauri::command]
-pub fn inspect_mod(path: String, ctx: State<'_, AppContext>) -> Result<Vec<ModPreview>> {
+pub fn inspect_mod(path: String, ctx: State<'_, AppContext>) -> Result<Inspection> {
     log(
         &ctx,
         "info",
         "mod_inspection_started",
         &format!("source={} exists={}", path, Path::new(&path).exists()),
     );
-    let conn = connection(&ctx)?;
+    let source = PathBuf::from(&path);
+    let staging = archives::stage(&source, &ctx.cache_dir).inspect_err(|error| {
+        log(
+            &ctx,
+            "warn",
+            "mod_inspection_failed",
+            &format!("source={path} error={error}"),
+        );
+    })?;
+    // A download that scripts its own installation answers "what does this
+    // contain?" with a set of questions instead of a payload. Reading it as a
+    // plain archive would offer every variant at once, which is the pile the
+    // script exists to sort out.
+    if let Some(package_root) = fomod::locate(&staging.root) {
+        match fomod::parse(&package_root) {
+            Ok(installer) => return begin_installer(&ctx, &source, installer, staging),
+            // A script this manager cannot read is not a reason to refuse the
+            // download: the archive still holds the files, and reading it the
+            // ordinary way puts every option in front of the person by hand.
+            Err(error) => log(
+                &ctx,
+                "warn",
+                "fomod_script_unreadable",
+                &format!("source={path} error={error}"),
+            ),
+        }
+    }
+    let found = scan_staged(&ctx, &source, staging).inspect_err(|error| {
+        log(
+            &ctx,
+            "warn",
+            "mod_inspection_failed",
+            &format!("source={path} error={error}"),
+        );
+    })?;
+    let previews = register_previews(&ctx, found)?;
+    log(
+        &ctx,
+        "info",
+        "mod_inspected",
+        &format!(
+            "mods={} types={}",
+            previews.len(),
+            previews
+                .iter()
+                .map(|preview| preview.mod_type.clone())
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    );
+    Ok(Inspection {
+        previews,
+        installer: None,
+    })
+}
+
+/// Reads a staged tree with the current settings and game state.
+fn scan_staged(
+    ctx: &AppContext,
+    source: &Path,
+    staging: archives::Staging,
+) -> Result<Vec<(StagedMod, ModPreview)>> {
+    let conn = connection(ctx)?;
     let settings = database::settings(&conn)?;
-    let game = game(&ctx)?;
+    let game = game(ctx)?;
     let ue = ue4ss::detect(
         game.path.as_deref().map(Path::new),
         game.compat_data_path.as_deref().map(Path::new),
     );
     let tool = retoc::find(settings.retoc_path.as_deref());
-    let found = mods::scan(
-        Path::new(&path),
-        &ctx.cache_dir,
+    mods::scan_staged(
+        source,
+        staging,
         &tool,
         game.steam_build_id.as_deref(),
         ue.healthy,
         settings.advanced_package_names,
-    );
-    let found = match found {
-        Ok(found) => found,
-        Err(error) => {
-            log(
-                &ctx,
-                "warn",
-                "mod_inspection_failed",
-                &format!("source={} error={error}", path),
-            );
-            return Err(error);
-        }
-    };
+    )
+}
+
+/// Holds scanned candidates for installation and fills in what only the
+/// library can answer: what they overlap, what they replace, and where they
+/// would sit in the load order.
+fn register_previews(
+    ctx: &AppContext,
+    found: Vec<(StagedMod, ModPreview)>,
+) -> Result<Vec<ModPreview>> {
+    let conn = connection(ctx)?;
     let mut result = Vec::new();
-    let mut held = previews(&ctx)?;
+    let mut held = previews(ctx)?;
     for (staged, mut preview) in found {
         preview.conflicts = database::conflicts_for_packages(&conn, &staged.packages)?;
         preview.replaces = replaced_by(&conn, &staged)?;
@@ -295,22 +363,197 @@ pub fn inspect_mod(path: String, ctx: State<'_, AppContext>) -> Result<Vec<ModPr
         held.insert(staged.staging_id.clone(), staged);
         result.push(preview);
     }
-    drop(held);
-    log(
-        &ctx,
-        "info",
-        "mod_inspected",
-        &format!(
-            "mods={} types={}",
-            result.len(),
-            result
-                .iter()
-                .map(|preview| preview.mod_type.clone())
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-    );
     Ok(result)
+}
+
+/// Opens a scripted installer, or completes it outright when its script asks
+/// nothing: a package whose every question is hidden has already been answered,
+/// and showing an empty wizard would be a step with no purpose.
+fn begin_installer(
+    ctx: &AppContext,
+    source: &Path,
+    installer: fomod::Installer,
+    staging: archives::Staging,
+) -> Result<Inspection> {
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let opened = installer.session(&session_id, &[]);
+    let session = match opened {
+        Ok(session) => session,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&staging.root);
+            return Err(error);
+        }
+    };
+    let pending = fomod::Pending {
+        installer,
+        staging_root: staging.root,
+        source: source.to_path_buf(),
+    };
+    if session.complete {
+        let previews = apply_installer(ctx, &pending, &[])?;
+        let _ = std::fs::remove_dir_all(&pending.staging_root);
+        return Ok(Inspection {
+            previews,
+            installer: None,
+        });
+    }
+    log(
+        ctx,
+        "info",
+        "fomod_started",
+        &format!("module={} session={session_id}", session.module_name),
+    );
+    installers(ctx)?.insert(session_id, pending);
+    Ok(Inspection {
+        previews: Vec::new(),
+        installer: Some(session),
+    })
+}
+
+/// Writes the files a set of answers selects into a sandbox of their own, then
+/// reads that back as though it were the archive the person downloaded.
+fn apply_installer(
+    ctx: &AppContext,
+    pending: &fomod::Pending,
+    answers: &[fomod::StepAnswer],
+) -> Result<Vec<ModPreview>> {
+    let root = ctx
+        .cache_dir
+        .join("staging")
+        .join(uuid::Uuid::new_v4().to_string());
+    std::fs::create_dir_all(&root)?;
+    let built = match pending.installer.install(answers, &root) {
+        Ok(built) => built,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&root);
+            return Err(error);
+        }
+    };
+    // `fomod/info.xml` is where a scripted package states its own title,
+    // author, and version, and the selected files rarely carry a manifest of
+    // their own. Writing one lets that metadata reach the preview through the
+    // same path every other mod's metadata takes.
+    if let Err(error) = write_installer_manifest(&pending.installer, &root) {
+        log(
+            ctx,
+            "warn",
+            "fomod_manifest_not_written",
+            &error.to_string(),
+        );
+    }
+    let staging = archives::Staging {
+        root,
+        warnings: built.warnings,
+        executables: built.executables,
+    };
+    let found = scan_staged(ctx, &pending.source, staging)?;
+    register_previews(ctx, found)
+}
+
+/// Records the script's own metadata as a manifest, unless the files it
+/// installed already brought one.
+fn write_installer_manifest(installer: &fomod::Installer, root: &Path) -> Result<()> {
+    let existing = walkdir::WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+        .any(|entry| {
+            entry.file_type().is_file() && entry.file_name().eq_ignore_ascii_case("zcom-mod.json")
+        });
+    if existing {
+        return Ok(());
+    }
+    let info = &installer.info;
+    let name = info
+        .name
+        .clone()
+        .unwrap_or_else(|| installer.module_name.clone());
+    let slug: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let manifest = serde_json::json!({
+        "schemaVersion": 1,
+        "id": format!("fomod.{}", slug.trim_matches('-')),
+        "name": name,
+        "version": info.version,
+        "author": info.author,
+        "description": info.description,
+    });
+    std::fs::write(
+        root.join("zcom-mod.json"),
+        serde_json::to_vec_pretty(&manifest)?,
+    )?;
+    Ok(())
+}
+
+/// Answers the question a scripted installer is on and reports the next one.
+///
+/// The answers given so far arrive in full on every call, and the script is
+/// replayed from the start against them. That is what lets a person go back
+/// and change an earlier answer: dropping it from the list is enough to undo
+/// everything it decided, including which later questions get asked at all.
+#[tauri::command]
+pub fn fomod_advance(
+    session_id: String,
+    answers: Vec<fomod::StepAnswer>,
+    ctx: State<'_, AppContext>,
+) -> Result<fomod::Session> {
+    let held = installers(&ctx)?;
+    let pending = held.get(&session_id).ok_or(AppError::PreviewExpired)?;
+    pending.installer.session(&session_id, &answers)
+}
+
+/// Finishes a scripted installer and hands back the mods its answers produced.
+#[tauri::command]
+pub fn fomod_install(
+    session_id: String,
+    answers: Vec<fomod::StepAnswer>,
+    ctx: State<'_, AppContext>,
+) -> Result<Vec<ModPreview>> {
+    let pending = installers(&ctx)?
+        .remove(&session_id)
+        .ok_or(AppError::PreviewExpired)?;
+    let result = apply_installer(&ctx, &pending, &answers);
+    match &result {
+        // The archive is only needed while questions remain, and the answers
+        // have been copied out of it.
+        Ok(previews) => {
+            let _ = std::fs::remove_dir_all(&pending.staging_root);
+            log(
+                &ctx,
+                "info",
+                "fomod_completed",
+                &format!("session={session_id} mods={}", previews.len()),
+            );
+        }
+        // A refused answer is worth another try, so the session goes back.
+        Err(error) => {
+            log(
+                &ctx,
+                "warn",
+                "fomod_failed",
+                &format!("session={session_id} error={error}"),
+            );
+            installers(&ctx)?.insert(session_id, pending);
+        }
+    }
+    result
+}
+
+/// Abandons a scripted installer and removes the archive it was reading.
+#[tauri::command]
+pub fn fomod_cancel(session_id: String, ctx: State<'_, AppContext>) -> Result<()> {
+    if let Some(pending) = installers(&ctx)?.remove(&session_id) {
+        let _ = std::fs::remove_dir_all(&pending.staging_root);
+    }
+    Ok(())
 }
 
 /// Every orderable mod, highest priority first.

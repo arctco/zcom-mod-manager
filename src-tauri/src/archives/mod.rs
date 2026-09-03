@@ -34,7 +34,7 @@ fn unsafe_name(path: &Path) -> bool {
 /// long file name, the mod folder never materializes, and detection fails on an
 /// archive that installs correctly on Windows. Both separators are therefore
 /// treated as directory boundaries on every platform.
-fn archive_relative(name: &str) -> Option<PathBuf> {
+pub(crate) fn archive_relative(name: &str) -> Option<PathBuf> {
     // An absolute member name is never legitimate, and rebasing it silently
     // would hide an archive that tried to write outside its own tree.
     if name.starts_with('/') || name.starts_with('\\') {
@@ -54,7 +54,7 @@ fn archive_relative(name: &str) -> Option<PathBuf> {
     (!path.as_os_str().is_empty() && !unsafe_name(&path)).then_some(path)
 }
 
-fn suspicious(path: &Path) -> bool {
+pub(crate) fn suspicious(path: &Path) -> bool {
     matches!(
         path.extension()
             .and_then(|e| e.to_str())

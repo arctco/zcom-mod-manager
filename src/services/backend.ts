@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AdoptionGroup, AdoptionReport, AppSettings, Dashboard, DiagnosticReport, ExistingModScan, LaunchReport, Links, LoadOrderPreview, LoadOrderState, ManagedLibraryInfo, ModPreview, ModSummary, ModUpdateReport, NexusAccount, NexusStatus, Ue4ssInstallReport, UpdateInfo } from "../types";
+import type { AdoptionGroup, AdoptionReport, AppSettings, Dashboard, DiagnosticReport, ExistingModScan, FomodAnswer, FomodSession, Inspection, LaunchReport, Links, LoadOrderPreview, LoadOrderState, ManagedLibraryInfo, ModPreview, ModSummary, ModUpdateReport, NexusAccount, NexusStatus, Ue4ssInstallReport, UpdateInfo } from "../types";
 
 export const backend = {
   dashboard: () => invoke<Dashboard>("get_dashboard"),
@@ -8,7 +8,10 @@ export const backend = {
   previewLoadOrder: (orderedModIds: string[]) => invoke<LoadOrderPreview>("preview_load_order", { orderedModIds }),
   applyLoadOrder: (orderedModIds: string[]) => invoke<LoadOrderState>("apply_load_order", { orderedModIds }),
   applyUe4ssOrder: (orderedModIds: string[]) => invoke<LoadOrderState>("apply_ue4ss_order", { orderedModIds }),
-  inspect: (path: string) => invoke<ModPreview[]>("inspect_mod", { path }),
+  inspect: (path: string) => invoke<Inspection>("inspect_mod", { path }),
+  fomodAdvance: (sessionId: string, answers: FomodAnswer[]) => invoke<FomodSession>("fomod_advance", { sessionId, answers }),
+  fomodInstall: (sessionId: string, answers: FomodAnswer[]) => invoke<ModPreview[]>("fomod_install", { sessionId, answers }),
+  fomodCancel: (sessionId: string) => invoke<void>("fomod_cancel", { sessionId }),
   discoverExistingMods: () => invoke<ExistingModScan>("discover_existing_mods"),
   adoptExistingMods: (scanId: string, groups: AdoptionGroup[]) => invoke<AdoptionReport>("adopt_existing_mods", { scanId, groups }),
   acknowledgeExistingModPrompt: () => invoke<void>("acknowledge_existing_mod_prompt"),

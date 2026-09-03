@@ -247,6 +247,63 @@ export interface ModPreview {
   optionLabel: string | null;
 }
 
+/** One option a scripted installer offers inside a group. */
+export interface FomodPlugin {
+  id: string;
+  name: string;
+  description: string | null;
+  /** A data: URL, since the sandbox is not reachable from the interface. */
+  image: string | null;
+  kind: "Required" | "Recommended" | "Optional" | "CouldBeUsable" | "NotUsable";
+  /** Whether the author's own answer selects this option. */
+  selected: boolean;
+}
+
+export type FomodGroupKind = "SelectExactlyOne" | "SelectAtMostOne" | "SelectAtLeastOne" | "SelectAny" | "SelectAll";
+
+export interface FomodGroup {
+  name: string;
+  kind: FomodGroupKind;
+  plugins: FomodPlugin[];
+}
+
+export interface FomodStep {
+  index: number;
+  name: string;
+  groups: FomodGroup[];
+}
+
+/** One answered step, as it is handed back to the backend. */
+export interface FomodAnswer {
+  step: number;
+  plugins: string[];
+}
+
+export interface FomodSession {
+  sessionId: string;
+  moduleName: string;
+  moduleImage: string | null;
+  author: string | null;
+  version: string | null;
+  description: string | null;
+  /** The question awaiting an answer, or null once there are none left. */
+  step: FomodStep | null;
+  position: number;
+  /** The most this installer can still ask; it falls as steps are skipped. */
+  total: number;
+  complete: boolean;
+  warnings: string[];
+}
+
+/**
+ * What reading a download produced: either the mods it contains, or the first
+ * question its scripted installer asks.
+ */
+export interface Inspection {
+  previews: ModPreview[];
+  installer: FomodSession | null;
+}
+
 export interface ExistingModCandidate {
   id: string;
   name: string;

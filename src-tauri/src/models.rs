@@ -282,6 +282,18 @@ pub struct ModPreview {
     pub option_label: Option<String>,
 }
 
+/// What reading a download produced.
+///
+/// Most archives describe their contents directly and come back as previews. An
+/// archive carrying a scripted installer instead comes back as the first
+/// question that installer asks, and produces previews only once it is answered.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Inspection {
+    pub previews: Vec<ModPreview>,
+    pub installer: Option<crate::fomod::Session>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExistingModCandidate {

@@ -1,6 +1,7 @@
 import { AlertTriangle, Archive, ArrowUpCircle, Check, ChevronRight, Download, FileArchive, FolderOpen, Pencil, ShieldCheck, X } from "lucide-react";
+import { FomodWizard } from "../components/FomodWizard";
 import { StatusBadge } from "../components/StatusBadge";
-import type { DownloadProgress, ModPreview, PreviewType } from "../types";
+import type { DownloadProgress, FomodAnswer, FomodSession, ModPreview, PreviewType } from "../types";
 import { formatBytes } from "../utils/format";
 
 const typeLabel: Record<PreviewType, string> = {
@@ -18,6 +19,12 @@ interface Props {
   download: DownloadProgress | null;
   advanced: boolean;
   installing: string | null;
+  /** The scripted installer awaiting answers, when the download carries one. */
+  installer: FomodSession | null;
+  installerRestored: FomodAnswer | null;
+  installerCanGoBack: boolean;
+  onInstallerNext: (answer: FomodAnswer) => void;
+  onInstallerBack: () => void;
   onAdvanced: () => void;
   onName: (stagingId: string, name: string) => void;
   onChooseFile: () => void;
@@ -83,7 +90,7 @@ function Candidate({ preview, name, advanced, installing, onName, onAdvanced, on
   </section>;
 }
 
-export function InstallPage({ previews, names, loading, download, advanced, installing, onAdvanced, onName, onChooseFile, onChooseFolder, onInstall, onInstallAll, onInstallRuntime, onCancel }: Props) {
+export function InstallPage({ previews, names, loading, download, advanced, installing, installer, installerRestored, installerCanGoBack, onInstallerNext, onInstallerBack, onAdvanced, onName, onChooseFile, onChooseFolder, onInstall, onInstallAll, onInstallRuntime, onCancel }: Props) {
   const many = previews.length > 1;
   const optionCount = previews.filter(preview => preview.optionLabel).length;
   const additionalCount = previews.length - optionCount;
@@ -91,8 +98,12 @@ export function InstallPage({ previews, names, loading, download, advanced, inst
     && optionCount === 0
     && previews.every(preview => preview.modType !== "ue4ss-runtime" && preview.valid);
   return <div className="page install-page">
-    <header className="page-header"><div><p className="eyebrow">SAFE INSTALLER</p><h1>{previews.length ? "Review mod" : "Install a mod"}</h1><p className="muted">Nothing is deployed until validation succeeds and you confirm.</p></div>{previews.length > 0 && <button onClick={onCancel}><X size={17} />{many ? "Cancel all" : "Cancel"}</button>}</header>
-    {previews.length === 0
+    <header className="page-header"><div><p className="eyebrow">SAFE INSTALLER</p><h1>{installer ? "Choose your options" : previews.length ? "Review mod" : "Install a mod"}</h1><p className="muted">Nothing is deployed until validation succeeds and you confirm.</p></div>{previews.length > 0 && <button onClick={onCancel}><X size={17} />{many ? "Cancel all" : "Cancel"}</button>}</header>
+    {installer
+      // An archive that scripts its own installation asks its questions first;
+      // the answers decide which of its files are read as mods to review.
+      ? <FomodWizard session={installer} restored={installerRestored} busy={loading} canGoBack={installerCanGoBack} onNext={onInstallerNext} onBack={onInstallerBack} onCancel={onCancel} />
+      : previews.length === 0
       ? download
         // A handoff from the website: the transfer is the whole screen until
         // there is a payload to review, so it is never a silent wait.

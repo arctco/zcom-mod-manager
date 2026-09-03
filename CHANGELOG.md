@@ -2,6 +2,50 @@
 
 All notable changes are documented here.
 
+## 0.6.0
+
+### Added
+
+- Mods that ship a FOMOD installer script are now installed by answering the
+  author's own questions instead of by picking through the folders the archive
+  contains. Reading a download looks for `fomod/ModuleConfig.xml`, and when one
+  is present the installer presents its steps: option groups with the author's
+  descriptions and images, the recommended answer already selected, and the
+  choice illustrated beside the list. Required options cannot be unticked, and
+  an option an earlier answer rules out cannot be chosen.
+- Answers carry through the script the way its author wrote it. Selecting an
+  option sets the flags the script declares, later steps appear or are skipped
+  according to them, an option's own availability can depend on an earlier
+  answer, and the final set of flags decides both the per-option files and the
+  script's conditional installs. Going back takes an answer away along with
+  everything it decided, and returns the step exactly as it was left.
+- Only the files the answers selected are installed. They are written into a
+  sandbox of their own and then read exactly like an ordinary download, so a
+  scripted install arrives at the same review screen with the same container
+  verification, conflict detection, compatibility check, and naming as any
+  other mod. Sixteen mutually exclusive variants in one archive therefore
+  become one mod entry rather than sixteen options to choose between by hand.
+- A scripted install records the download it came from, so update checking,
+  Nexus matching, and in-place replacement keep working for it.
+- `fomod/info.xml` supplies the mod's published title, author, version, and
+  description when the selected files carry no `zcom-mod.json` of their own,
+  replacing the name derived from the download's file name.
+
+### Notes
+
+- Installer scripts are read as untrusted archive data. Every source and
+  destination path is checked against the same rules the extractor applies,
+  once when the script is parsed and again immediately before each file is
+  written, and a path that would leave the package is refused. Group rules
+  such as "choose exactly one" are enforced where the files are decided, not
+  only in the interface. No part of a script is executed.
+- Conditions on other game plugins or on tool and game versions have no meaning
+  for Zero Company, which has no such plugins. They are read, reported as a
+  visible warning, and treated as unmet, so an option gated behind one is shown
+  as unavailable rather than silently installed.
+- An archive whose script cannot be read is still installed the previous way,
+  with its folders offered as labeled options.
+
 ## 0.5.3
 
 ### Fixed

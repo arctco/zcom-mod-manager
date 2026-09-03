@@ -1,6 +1,6 @@
 [package]
 name = "zcom-mod-manager"
-version = "0.5.3"
+version = "0.6.0"
 description = "A dedicated mod manager for Star Wars: Zero Company"
 authors = ["Victor Hugo (arctco)"]
 edition = "2021"
@@ -38,6 +38,8 @@ tauri-plugin-single-instance = "2.4.3"
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 tokio = { version = "1.53.1", features = ["fs", "io-util"] }
 keyring = "4.1.6"
+roxmltree = "0.21"
+base64 = "0.22"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json", "stream", "http2", "charset"] }
 
 [dev-dependencies]

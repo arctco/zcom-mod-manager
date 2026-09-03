@@ -14,7 +14,7 @@ import { ModsPage } from "./pages/ModsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { AboutPage } from "./pages/AboutPage";
 import { backend, friendlyError } from "./services/backend";
-import type { AdoptionGroup, AdoptionReport, AppSettings, Dashboard, DiagnosticReport, DownloadProgress, ExistingModScan, Links, LoadOrderPreview, LoadOrderState, ManagedLibraryInfo, ModPreview, ModSummary, ModUpdate, ModUpdateReport, NexusAccount, NexusStatus, UpdateInfo } from "./types";
+import type { AdoptionGroup, AdoptionReport, AppSettings, Dashboard, DiagnosticReport, DownloadProgress, ExistingModScan, FomodAnswer, FomodSession, Links, LoadOrderPreview, LoadOrderState, ManagedLibraryInfo, ModPreview, ModSummary, ModUpdate, ModUpdateReport, NexusAccount, NexusStatus, UpdateInfo } from "./types";
 
 const defaultSettings: AppSettings = { gamePath: null, customExecutablePath: null, retocPath: null, logLevel: "normal", advancedPackageNames: false, reducedMotion: false, nexusAutoUpdateCheck: false };
 const defaultLinks: Links = { ue4ssDownload: "", nexusGame: "", nexusManager: "", project: "" };
@@ -71,6 +71,12 @@ export default function App() {
   // can hold several mods, so each keeps its own draft.
   const [names, setNames] = useState<Record<string, string>>({});
   const [installing, setInstalling] = useState<string | null>(null);
+  // A scripted installer and the answers it has been given. The answers are
+  // the whole of its state: the backend replays them from the start on every
+  // call, so dropping the last one is all that going back takes.
+  const [installer, setInstaller] = useState<FomodSession | null>(null);
+  const [answers, setAnswers] = useState<FomodAnswer[]>([]);
+  const [restored, setRestored] = useState<FomodAnswer | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [busyMod, setBusyMod] = useState<string | null>(null);
@@ -93,6 +99,7 @@ export default function App() {
   // Held in a ref as well as in state so an inspection that finishes while
   // another is starting can still find, and release, what it replaced.
   const previewsRef = useRef<ModPreview[]>([]);
+  const installerRef = useRef<FomodSession | null>(null);
   const inspectAttempt = useRef(0);
 
   const notify = (text: string, kind: "ok" | "error" = "ok") => { setToast({ text, kind }); window.setTimeout(() => setToast(null), 4500); };
@@ -157,12 +164,15 @@ export default function App() {
       const found = await backend.inspect(path);
       // Another inspection started while this one was reading the archive, so
       // this result is stale: release its sandbox rather than leaving it behind.
-      if (attempt !== inspectAttempt.current) { await release(found); return; }
+      if (attempt !== inspectAttempt.current) { await release(found.previews); await releaseInstaller(found.installer); return; }
       const replaced = previewsRef.current;
-      previewsRef.current = found;
-      setPreviews(found);
+      const replacedInstaller = installerRef.current;
+      previewsRef.current = found.previews;
+      setPreviews(found.previews);
+      openInstaller(found.installer);
       setNames({});
       await release(replaced);
+      await releaseInstaller(replacedInstaller);
     }
     catch (e) { if (attempt === inspectAttempt.current) notify(friendlyError(e), "error"); }
     finally { if (attempt === inspectAttempt.current) setLoading(false); }
@@ -173,11 +183,77 @@ export default function App() {
     try { await backend.discardPreviews(staged.map(preview => preview.stagingId)); }
     catch { /* the sandbox is a cache; a failure here is not worth a message */ }
   }
+  /** Releases the sandbox an unfinished scripted installer was reading. */
+  async function releaseInstaller(session: FomodSession | null) {
+    if (!session) return;
+    try { await backend.fomodCancel(session.sessionId); }
+    catch { /* the sandbox is a cache; a failure here is not worth a message */ }
+  }
+  function openInstaller(session: FomodSession | null) {
+    installerRef.current = session;
+    setInstaller(session);
+    setAnswers([]);
+    setRestored(null);
+  }
   async function discardPreviews() {
     const staged = previewsRef.current;
+    const session = installerRef.current;
     previewsRef.current = [];
     setPreviews([]);
+    openInstaller(null);
     await release(staged);
+    await releaseInstaller(session);
+  }
+  /**
+   * Answers the question a scripted installer is on. When that was its last
+   * question, the files the answers chose are read straight into previews, so
+   * finishing the installer lands on the same review screen every other
+   * download does.
+   */
+  async function answerInstaller(answer: FomodAnswer) {
+    const session = installerRef.current;
+    if (!session) return;
+    const given = [...answers.filter(item => item.step !== answer.step), answer];
+    setLoading(true);
+    try {
+      const next = await backend.fomodAdvance(session.sessionId, given);
+      if (!next.complete) {
+        installerRef.current = next;
+        setInstaller(next);
+        setAnswers(given);
+        setRestored(null);
+        return;
+      }
+      const found = await backend.fomodInstall(session.sessionId, given);
+      installerRef.current = null;
+      setInstaller(null);
+      setAnswers([]);
+      setRestored(null);
+      previewsRef.current = found;
+      setPreviews(found);
+      setNames({});
+    }
+    catch (e) { notify(friendlyError(e), "error"); }
+    finally { setLoading(false); }
+  }
+  /** Takes back the last answer, which also undoes every question it decided. */
+  async function backInstaller() {
+    const session = installerRef.current;
+    const previous = answers[answers.length - 1];
+    if (!session || !previous) return;
+    const given = answers.slice(0, -1);
+    setLoading(true);
+    try {
+      const next = await backend.fomodAdvance(session.sessionId, given);
+      installerRef.current = next;
+      setInstaller(next);
+      setAnswers(given);
+      // The step being returned to is the one that answer belonged to, so it
+      // is put back in front of the person exactly as they left it.
+      setRestored(previous);
+    }
+    catch (e) { notify(friendlyError(e), "error"); }
+    finally { setLoading(false); }
   }
   async function choose(options: { directory?: boolean; filters?: { name: string; extensions: string[] }[] } = {}) { const picked = await open({ multiple: false, ...options }); if (typeof picked === "string") await inspect(picked); }
   async function discoverExisting(interactive: boolean) {
@@ -306,8 +382,9 @@ export default function App() {
       setDownload(null);
       setNames({});
       const found = await backend.inspect(path);
-      previewsRef.current = found;
-      setPreviews(found);
+      previewsRef.current = found.previews;
+      setPreviews(found.previews);
+      openInstaller(found.installer);
     } catch (e) { notify(friendlyError(e), "error"); setDownload(null); }
     finally { setLoading(false); }
   }
@@ -451,7 +528,7 @@ export default function App() {
   return <Shell page={page} onPage={setPage} gameReady={dashboard.game.detected} updateAvailable={update?.updateAvailable === true}>
     {page === "home" && <HomePage data={dashboard} onInstall={() => setPage("install")} onDiagnose={() => setPage("diagnostics")} onLocate={locateGame} onOpenMods={() => void openFolder("mods")} onOpenGame={() => void openFolder("game")} onLaunchGame={() => void launchGame()} onGetUe4ss={() => openExternal(links.ue4ssDownload)} onInstallUe4ss={() => void installUe4ss()} busy={loading} launching={launching} canLaunch={dashboard.game.detected || !!settings.customExecutablePath} existingModsFound={existingPrompt ? (existingScan?.candidates.length ?? 0) + (existingScan?.unsupported.length ?? 0) : 0} onDismissExisting={() => setExistingPrompt(false)} onReviewExisting={() => { setExistingPrompt(false); setPage("mods"); setExistingReview(true); }} />}
     {page === "mods" && <ModsPage mods={mods} loadOrder={loadOrder} orderPreview={orderPreview} orderBusy={orderBusy} onPreviewOrder={ids => void previewOrder(ids)} onApplyOrder={ids => void applyOrder(ids)} onApplyUe4ssOrder={ids => void applyUe4ssOrder(ids)} onCancelOrder={() => setOrderPreview(null)} onBrowseNexus={() => openExternal(links.nexusGame)} busy={busyMod} onInstall={() => setPage("install")} onDiscover={() => void discoverExisting(true)} discovering={discoveringExisting} onToggle={toggle} onUninstall={uninstall} onVerify={verify} onRename={rename} onOpenInstalled={mod => void openFolder(`installed:${mod.id}`)} onOpenSource={mod => void openFolder(`mod:${mod.id}`)} updates={modUpdates} checkingUpdates={checkingMods} canCheckUpdates={nexus?.hasKey ?? false} directDownload={nexus?.premium ?? false} onCheckUpdates={() => void checkModUpdates(true)} onUpdateMod={update => void updateMod(update)} onLinkMod={(mod, reference) => void linkMod(mod, reference)} onSetModChecked={(mod, checked) => void setModChecked(mod, checked)} onOpenModPage={mod => { if (mod.nexusUrl) openExternal(mod.nexusUrl); }} onSetHidden={(mod, hidden) => void setHidden(mod, hidden)} />}
-    {page === "install" && <InstallPage previews={previews} names={names} loading={loading} download={download} advanced={advanced} installing={installing} onAdvanced={() => setAdvanced(!advanced)} onName={(stagingId, name) => setNames(current => ({ ...current, [stagingId]: name }))} onChooseFile={() => void choose({ filters: [{ name: "Supported mods", extensions: ["zip", "7z", "rar", "pak", "utoc", "ucas"] }] })} onChooseFolder={() => void choose({ directory: true })} onInstall={mod => void install(mod)} onInstallAll={mods => void installAll(mods)} onInstallRuntime={mod => void installRuntimeFrom(mod)} onCancel={() => void discardPreviews()} />}
+    {page === "install" && <InstallPage previews={previews} names={names} loading={loading} installer={installer} installerRestored={restored} installerCanGoBack={answers.length > 0} onInstallerNext={answer => void answerInstaller(answer)} onInstallerBack={() => void backInstaller()} download={download} advanced={advanced} installing={installing} onAdvanced={() => setAdvanced(!advanced)} onName={(stagingId, name) => setNames(current => ({ ...current, [stagingId]: name }))} onChooseFile={() => void choose({ filters: [{ name: "Supported mods", extensions: ["zip", "7z", "rar", "pak", "utoc", "ucas"] }] })} onChooseFolder={() => void choose({ directory: true })} onInstall={mod => void install(mod)} onInstallAll={mods => void installAll(mods)} onInstallRuntime={mod => void installRuntimeFrom(mod)} onCancel={() => void discardPreviews()} />}
     {page === "diagnostics" && <DiagnosticsPage report={diagnostics} loading={loading} onRun={() => void runDiagnostics()} onCopy={() => void navigator.clipboard.writeText(diagnostics?.text ?? "").then(() => notify("Diagnostic report copied."))} />}
     {page === "settings" && <SettingsPage settings={settings} retoc={dashboard.retoc} managedLibrary={managedLibrary} movingLibrary={movingLibrary} onChange={setSettings} onSave={() => void saveSettings()} onPickGame={() => void locateGame()} onPickExecutable={async () => { const picked = await open({ multiple: false, title: "Select game executable or launcher" }); if (typeof picked === "string") setSettings({ ...settings, customExecutablePath: picked }); }} onPickRetoc={async () => { const picked = await open({ multiple: false, title: "Select retoc executable" }); if (typeof picked === "string") setSettings({ ...settings, retocPath: picked }); }} onMoveLibrary={() => void moveLibrary()} onUseDefaultLibrary={() => void moveLibrary(true)} onOpenLibrary={() => void openFolder("library")} onOpenLogs={() => void openFolder("logs")} onOpenData={() => void openFolder("data")} links={links} onOpenLink={openExternal} nexus={nexus} nexusAccount={nexusAccount} onSaveNexusKey={saveNexusKey} onClearNexusKey={clearNexusKey} onToggleNxmHandler={toggleNxmHandler} onSetAutoUpdateCheck={setAutoUpdateCheck} />}
     {page === "about" && <AboutPage projectUrl={links.project} nexusUrl={links.nexusManager} onOpenLink={openExternal} update={update} checking={updateChecking} error={updateError} onCheckUpdates={() => void checkUpdates(true)} />}

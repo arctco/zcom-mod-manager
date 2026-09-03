@@ -195,6 +195,10 @@ struct Bucket {
 
 type ContainerGroup = (String, BTreeMap<String, PathBuf>);
 
+/// Stages a download and reads it in one step. The application stages first so
+/// it can look for a scripted installer before reading anything; the tests
+/// below have no such question to ask.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn scan(
     source: &Path,
@@ -204,11 +208,37 @@ pub fn scan(
     ue4ss_ready: bool,
     show_packages: bool,
 ) -> Result<Vec<(StagedMod, ModPreview)>> {
+    let staging = archives::stage(source, cache)?;
+    scan_staged(
+        source,
+        staging,
+        tool,
+        game_build,
+        ue4ss_ready,
+        show_packages,
+    )
+}
+
+/// Reads a tree that is already sitting in the sandbox.
+///
+/// A scripted installer writes the files its answers selected into a fresh
+/// staging directory, which is then read exactly like an extracted archive.
+/// `source` stays the original download so the mod is named after what the
+/// person recognizes and keeps the provenance that update checking needs.
+#[allow(clippy::too_many_arguments)]
+pub fn scan_staged(
+    source: &Path,
+    staging: archives::Staging,
+    tool: &ToolInfo,
+    game_build: Option<&str>,
+    ue4ss_ready: bool,
+    show_packages: bool,
+) -> Result<Vec<(StagedMod, ModPreview)>> {
     let archives::Staging {
         root,
         mut warnings,
         executables,
-    } = archives::stage(source, cache)?;
+    } = staging;
     let result = collect(
         source,
         &root,
@@ -1267,5 +1297,125 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.contains("README.txt")));
+    }
+
+    /// The whole scripted path, from an archive on disk to the mod a person
+    /// reviews: staging, finding the script, answering it, and reading back
+    /// only the files that answer selected.
+    #[test]
+    fn a_scripted_archive_installs_only_the_chosen_variant() {
+        let d = tempdir().unwrap();
+        let archive = d.path().join("Modular Mod 12 1.4.zip");
+        let script = r#"<?xml version="1.0" encoding="utf-8"?>
+<config>
+  <moduleName>Modular Mod</moduleName>
+  <installSteps order="Explicit">
+    <installStep name="Strength">
+      <optionalFileGroups order="Explicit">
+        <group name="Damage" type="SelectExactlyOne">
+          <plugins order="Explicit">
+            <plugin name="Mild">
+              <description>Gentle.</description>
+              <conditionFlags><flag name="damage">mild</flag></conditionFlags>
+              <typeDescriptor><type name="Recommended" /></typeDescriptor>
+            </plugin>
+            <plugin name="Wild">
+              <description>Strong.</description>
+              <conditionFlags><flag name="damage">wild</flag></conditionFlags>
+              <typeDescriptor><type name="Optional" /></typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+  </installSteps>
+  <conditionalFileInstalls>
+    <patterns>
+      <pattern>
+        <dependencies operator="And"><flagDependency flag="damage" value="wild" /></dependencies>
+        <files>
+          <file source="Wild\Damage_P.pak" destination="Damage_P.pak" />
+          <file source="Wild\Damage_P.utoc" destination="Damage_P.utoc" />
+          <file source="Wild\Damage_P.ucas" destination="Damage_P.ucas" />
+        </files>
+      </pattern>
+      <pattern>
+        <dependencies operator="And"><flagDependency flag="damage" value="mild" /></dependencies>
+        <files>
+          <file source="Mild\Damage_P.pak" destination="Damage_P.pak" />
+          <file source="Mild\Damage_P.utoc" destination="Damage_P.utoc" />
+          <file source="Mild\Damage_P.ucas" destination="Damage_P.ucas" />
+        </files>
+      </pattern>
+    </patterns>
+  </conditionalFileInstalls>
+</config>"#;
+        let info = r#"<?xml version="1.0" encoding="utf-8"?>
+<fomod><Name>Modular Mod</Name><Author>Someone</Author><Version>1.4</Version></fomod>"#;
+        {
+            let mut writer = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+            let options = zip::write::SimpleFileOptions::default();
+            let mut add = |name: &str, body: &[u8]| {
+                writer.start_file(name, options).unwrap();
+                std::io::Write::write_all(&mut writer, body).unwrap();
+            };
+            add("fomod\\ModuleConfig.xml", script.as_bytes());
+            add("fomod\\info.xml", info.as_bytes());
+            for variant in ["Mild", "Wild"] {
+                for extension in ["pak", "utoc", "ucas"] {
+                    add(
+                        &format!("{variant}\\Damage_P.{extension}"),
+                        variant.as_bytes(),
+                    );
+                }
+            }
+            writer.finish().unwrap();
+        }
+        let cache = tempdir().unwrap();
+        let staging = crate::archives::stage(&archive, cache.path()).unwrap();
+        let package = crate::fomod::locate(&staging.root).expect("the script is found");
+        let installer = crate::fomod::parse(&package).unwrap();
+
+        // The first question is asked with the author's own answer ready.
+        let opened = installer.session("s", &[]).unwrap();
+        let step = opened.step.expect("a question to answer");
+        assert_eq!(step.name, "Strength");
+        assert_eq!(step.groups[0].plugins[0].name, "Mild");
+        assert!(step.groups[0].plugins[0].selected);
+
+        // Answering it differently is what decides the files.
+        let answers = vec![crate::fomod::StepAnswer {
+            step: step.index,
+            plugins: vec![step.groups[0].plugins[1].id.clone()],
+        }];
+        assert!(installer.session("s", &answers).unwrap().complete);
+        let built = cache.path().join("built");
+        fs::create_dir_all(&built).unwrap();
+        let result = installer.install(&answers, &built).unwrap();
+
+        let found = scan_staged(
+            &archive,
+            crate::archives::Staging {
+                root: built.clone(),
+                warnings: result.warnings,
+                executables: result.executables,
+            },
+            &tool(),
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(found.len(), 1, "the answers describe one mod, not two");
+        let (staged, preview) = &found[0];
+        assert_eq!(preview.mod_type, "iostore");
+        assert_eq!(
+            preview.files,
+            vec!["Damage_P.pak", "Damage_P.utoc", "Damage_P.ucas"]
+        );
+        // Only the chosen variant was written, and the download it came from is
+        // still what the mod records, so update checking keeps working.
+        assert_eq!(fs::read(built.join("Damage_P.pak")).unwrap(), b"Wild");
+        assert_eq!(staged.source_archive, archive.display().to_string());
     }
 }

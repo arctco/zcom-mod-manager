@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ModPreview, PreviewType } from "../types";
+import type { FomodSession, ModPreview, PreviewType } from "../types";
 import { InstallPage } from "./InstallPage";
 
 afterEach(cleanup);
@@ -19,6 +19,8 @@ const preview = (stagingId: string, name: string, modType: PreviewType = "ue4ss"
 function props(overrides: Partial<Parameters<typeof InstallPage>[0]> = {}): Parameters<typeof InstallPage>[0] {
   return {
     previews: [], names: {}, loading: false, download: null, advanced: false, installing: null,
+    installer: null, installerRestored: null, installerCanGoBack: false,
+    onInstallerNext: vi.fn(), onInstallerBack: vi.fn(),
     onAdvanced: vi.fn(), onName: vi.fn(), onChooseFile: vi.fn(), onChooseFolder: vi.fn(),
     onInstall: vi.fn(), onInstallAll: vi.fn(), onInstallRuntime: vi.fn(), onCancel: vi.fn(), ...overrides
   };
@@ -103,5 +105,88 @@ describe("upgrades", () => {
     };
     render(<InstallPage {...props({ previews: [core, runtime] })} />);
     expect(screen.getByRole("button", { name: "Update all components" })).toBeDefined();
+  });
+});
+
+const session = (overrides: Partial<FomodSession> = {}): FomodSession => ({
+  sessionId: "s1", moduleName: "Stronger with the Force", moduleImage: null,
+  author: "GhoulMonkey", version: "2.2.0", description: null, position: 1, total: 3,
+  complete: false, warnings: [],
+  step: {
+    index: 0, name: "Choose a setup", groups: [{
+      name: "Starting point", kind: "SelectExactlyOne", plugins: [
+        { id: "g0p0", name: "Balanced", description: "Start here.", image: null, kind: "Recommended", selected: true },
+        { id: "g0p1", name: "More", description: "Heavier sabers.", image: null, kind: "Optional", selected: false },
+        { id: "g0p2", name: "Ruled out", description: "Needs something else.", image: null, kind: "NotUsable", selected: false }
+      ]
+    }, {
+      name: "Extras", kind: "SelectAny", plugins: [
+        { id: "g1p0", name: "Meditations", description: "Optional extra.", image: null, kind: "Optional", selected: false }
+      ]
+    }]
+  },
+  ...overrides
+});
+
+describe("guided installer", () => {
+  it("asks the archive's own questions and starts on the author's recommendation", () => {
+    render(<InstallPage {...props({ installer: session() })} />);
+    expect(screen.getByText("Choose your options")).toBeDefined();
+    expect(screen.getByRole("status").textContent).toBe("Step 1 of 3");
+    expect((screen.getByRole("radio", { name: /Balanced/ }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole("radio", { name: /More/ }) as HTMLInputElement).checked).toBe(false);
+    // The description of whatever is selected is what the panel explains.
+    expect(screen.getByText("Start here.")).toBeDefined();
+  });
+
+  it("reports the options that were chosen", async () => {
+    const onInstallerNext = vi.fn();
+    render(<InstallPage {...props({ installer: session(), onInstallerNext })} />);
+    await userEvent.click(screen.getByRole("radio", { name: /More/ }));
+    await userEvent.click(screen.getByRole("checkbox", { name: /Meditations/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(onInstallerNext).toHaveBeenCalledWith({ step: 0, plugins: ["g0p1", "g1p0"] });
+  });
+
+  it("will not move on while a group the script requires an answer to is empty", async () => {
+    const onInstallerNext = vi.fn();
+    const required = session();
+    required.step!.groups[1] = { name: "Apply to", kind: "SelectAtLeastOne", plugins: [
+      { id: "g1p0", name: "Allies", description: null, image: null, kind: "Optional", selected: false }
+    ] };
+    render(<InstallPage {...props({ installer: required, onInstallerNext })} />);
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(onInstallerNext).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert").textContent).toContain("Apply to needs at least one option.");
+    await userEvent.click(screen.getByRole("checkbox", { name: /Allies/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(onInstallerNext).toHaveBeenCalledWith({ step: 0, plugins: ["g0p0", "g1p0"] });
+  });
+
+  it("does not let an option an earlier answer ruled out be chosen", () => {
+    render(<InstallPage {...props({ installer: session() })} />);
+    expect((screen.getByRole("radio", { name: /Ruled out/ }) as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it("offers going back only once an answer has been given", async () => {
+    const onInstallerBack = vi.fn();
+    const { rerender } = render(<InstallPage {...props({ installer: session(), onInstallerBack })} />);
+    expect((screen.getByRole("button", { name: "Back" }) as HTMLButtonElement).disabled).toBe(true);
+    rerender(<InstallPage {...props({ installer: session(), installerCanGoBack: true, onInstallerBack })} />);
+    await userEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(onInstallerBack).toHaveBeenCalled();
+  });
+
+  it("restores the answer a step was given when it is returned to", () => {
+    const restored = { step: 0, plugins: ["g0p1", "g1p0"] };
+    render(<InstallPage {...props({ installer: session(), installerRestored: restored, installerCanGoBack: true })} />);
+    expect((screen.getByRole("radio", { name: /More/ }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole("radio", { name: /Balanced/ }) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole("checkbox", { name: /Meditations/ }) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("names the last question as the one that ends the installer", () => {
+    render(<InstallPage {...props({ installer: session({ position: 3, total: 3 }) })} />);
+    expect(screen.getByRole("button", { name: "Finish and review" })).toBeDefined();
   });
 });

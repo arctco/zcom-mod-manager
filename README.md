@@ -22,6 +22,9 @@ records SHA-256 ownership, and treats Linux/Proton as a first-class platform.
 - Dynamic Steam build-ID detection and update warnings
 - ZIP, 7z, direct PAK/UTOC/UCAS, folder, picker, and drag-and-drop input
 - Nested archive payload discovery without copying documentation or random data
+- Guided FOMOD installers: an archive that scripts its own options is installed
+  by answering the author's questions, with images, descriptions, and
+  recommended answers
 - Separate, labeled choices for packaged variants bundled in sibling folders
 - IoStore pair/triplet validation and retoc 0.1.5 verification
 - PAK-only and UE4SS Lua/DLL mod support
@@ -61,7 +64,7 @@ project's own Z mark, drawn as plain SVG in `src-tauri/icons/app-icon.svg`.
 
 Steam Deck/SteamOS should work through the x86_64 Linux AppImage. Add it as a
 non-Steam application if desired. See [Known Limitations](KNOWN_LIMITATIONS.md)
-for the boundaries of v0.4.0.
+for the current boundaries.
 
 ## Supported Mod Types
 
@@ -206,6 +209,48 @@ the managed library and then deployed.
 Installation follows: extract → recognize → validate → stage → deploy → commit
 database ownership. If deployment or the database commit fails, newly deployed
 files are removed.
+
+## Guided Installers (FOMOD)
+
+Larger mods increasingly ship as one download holding every variant the author
+offers, with a `fomod/ModuleConfig.xml` describing the questions to ask and the
+files each answer installs. When a download carries one, the installer reads it
+and asks those questions instead of presenting the folders inside the archive.
+
+Each step shows its option groups with the author's own descriptions and
+images, and the option under the cursor is illustrated beside the list. The
+answer the author recommends is selected to begin with. An option the script
+marks as required cannot be unticked, and one an earlier answer rules out
+cannot be chosen.
+
+Answers drive the script the way its author wrote it. Choosing an option sets
+the flags the script declares; later steps appear or are skipped according to
+those flags; an option's own availability can depend on an earlier answer; and
+the final set of flags decides both the files attached to each option and the
+script's conditional installs. **Back** takes an answer away along with
+everything it decided, and returns that step exactly as it was left.
+
+Only the files the answers selected are installed. They are written into a
+sandbox of their own and then read exactly like an ordinary download, so the
+result reaches the same review screen, with the same container verification,
+conflict detection, compatibility check, and naming, as any other mod. An
+archive holding sixteen mutually exclusive variants therefore becomes one mod
+entry rather than sixteen options to compare by hand, and the download it came
+from is still recorded, so update checking keeps working.
+
+The script is untrusted archive data and is never executed. Every source and
+destination path is checked against the same rules the extractor applies, once
+when the script is parsed and again immediately before each file is written; a
+path that would leave the package is refused. Group rules such as "choose
+exactly one" are enforced where the files are decided rather than only in the
+interface.
+
+Conditions on other game plugins or on tool and game versions have no meaning
+for Zero Company, which has no such plugins. They are read, reported as a
+visible warning, and treated as unmet, so an option gated behind one is shown
+as unavailable rather than installed silently. An archive whose script cannot
+be read is installed the previous way, with its folders offered as labeled
+options.
 
 ## Enabling / Disabling Mods
 
@@ -520,6 +565,7 @@ src/                         React/TypeScript UI
 src-tauri/src/steam/         Steam and game discovery
 src-tauri/src/archives/      sandboxed ZIP/7z staging
 src-tauri/src/mods/          payload and manifest recognition
+src-tauri/src/fomod/         FOMOD installer scripts and guided selection
 src-tauri/src/adoption.rs    existing-mod discovery and adoption
 src-tauri/src/deployment/    ownership-safe lifecycle
 src-tauri/src/retoc/         verifier abstraction
@@ -556,6 +602,7 @@ Confirm checksums after the run finishes. See
   too, and Nexus catalog browsing remains out of scope
 - **0.4:** existing-mod migration, bundled packaged-variant selection, and a
   custom game executable shipped
+- **0.6:** guided FOMOD installers for archives that script their own options
 - **Future / separate project:** ZCOM Mod Studio for asset inspection and authoring
 
 ## Contributing

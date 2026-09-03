@@ -1,4 +1,4 @@
-# Known Limitations — 0.5.3
+# Known Limitations — 0.6.0
 
 - 7z installation uses the open-source 7-Zip command-line program available on
   the host. ZIP support is built in. A missing `7z` produces setup guidance.
@@ -54,6 +54,24 @@
 - PAK-only mods remain visible but non-orderable: the local capability fixture
   did not pass the runtime gate. Their contents are also opaque, so the manager
   cannot identify which assets a PAK-only mod wins or loses.
+- A FOMOD installer script is read for its options and file rules, not run. The
+  format also allows conditions on other game plugins and on tool or game
+  versions; Zero Company has no such plugins, so those conditions are reported
+  as a visible warning and treated as unmet, and an option gated behind one is
+  shown as unavailable. Version-numbered dependencies on the game or on the
+  manager are treated the same way.
+- An installer script the manager cannot parse is not a refusal: the archive is
+  read the previous way instead, with its folders offered as labeled options.
+  The same applies to a file the script names that the archive does not
+  actually contain, which is skipped with a warning rather than failing the
+  install.
+- Option images are shown for PNG, JPEG, GIF, WebP, and BMP up to 4 MB each. A
+  larger or differently encoded image is left out and its option still lists
+  its name and description.
+- A scripted install produces mod entries from the files it selected, not one
+  entry per answer. Where those files form a single flat payload they become
+  one mod, so re-running the installer with different answers replaces that mod
+  rather than adding to it.
 - Hiding a mod affects the library list only. A hidden mod is still installed,
   still deployed, still counted on Home, and still listed in the load-order and
   UE4SS start-order editors, because it still loads and its position still
