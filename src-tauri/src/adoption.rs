@@ -773,6 +773,7 @@ fn adopt_group(
         nexus_url: None,
         nexus_ignored: false,
         hidden: false,
+        fomod: false,
         files: rows
             .iter()
             .map(|(_, destination, size, hash)| ModFile {
@@ -871,6 +872,7 @@ mod tests {
             nexus_url: None,
             nexus_ignored: false,
             hidden: false,
+            fomod: false,
             files: Vec::new(),
         };
         let tx = conn.transaction().unwrap();

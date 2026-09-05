@@ -142,6 +142,8 @@ export interface ModSummary {
   nexusIgnored: boolean;
   /** Kept out of the library list. Still installed, deployed, and ordered. */
   hidden: boolean;
+  /** Its retained FOMOD installer can be opened again. */
+  fomod: boolean;
   files: ModFile[];
 }
 
@@ -302,6 +304,11 @@ export interface FomodSession {
 export interface Inspection {
   previews: ModPreview[];
   installer: FomodSession | null;
+}
+
+/** A retained FOMOD reopened with the recipe used for its last installation. */
+export interface FomodReconfiguration extends Inspection {
+  answers: FomodAnswer[];
 }
 
 export interface ExistingModCandidate {

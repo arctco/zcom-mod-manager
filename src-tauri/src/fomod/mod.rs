@@ -925,6 +925,8 @@ pub struct Pending {
     pub installer: Installer,
     pub staging_root: PathBuf,
     pub source: PathBuf,
+    /// The installed entry this session was reopened from, when applicable.
+    pub reconfigure: Option<(crate::models::ReplacedMod, String)>,
 }
 
 /// Places one file at a script-chosen destination inside `root`.

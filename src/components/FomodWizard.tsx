@@ -142,7 +142,7 @@ export function FomodWizard({ session, restored, busy, canGoBack, onNext, onBack
       </aside>
     </div>
     {problem && <div className="inline-warning" role="alert"><AlertTriangle aria-hidden size={17} />{problem}</div>}
-    <div className="inline-note"><b><Info aria-hidden size={16} />Nothing is installed yet</b><span>The installer only decides which of the archive's files are used. They are validated and shown for confirmation before anything is deployed.</span></div>
+    <div className="inline-note"><b><Info aria-hidden size={16} />No changes are applied yet</b><span>The installer only decides which of the archive's files are used. They are validated and shown for confirmation before anything is deployed or replaced.</span></div>
     <footer className="dialog-actions">
       <button onClick={onCancel} disabled={busy}><X size={17} />Cancel</button>
       <button onClick={onBack} disabled={!canGoBack || busy}><ArrowLeft size={17} />Back</button>

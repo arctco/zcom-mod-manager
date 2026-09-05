@@ -98,7 +98,7 @@ export function InstallPage({ previews, names, loading, download, advanced, inst
     && optionCount === 0
     && previews.every(preview => preview.modType !== "ue4ss-runtime" && preview.valid);
   return <div className="page install-page">
-    <header className="page-header"><div><p className="eyebrow">SAFE INSTALLER</p><h1>{installer ? "Choose your options" : previews.length ? "Review mod" : "Install a mod"}</h1><p className="muted">Nothing is deployed until validation succeeds and you confirm.</p></div>{previews.length > 0 && <button onClick={onCancel}><X size={17} />{many ? "Cancel all" : "Cancel"}</button>}</header>
+    <header className="page-header"><div><p className="eyebrow">SAFE INSTALLER</p><h1>{installer ? "Choose your options" : previews.length ? "Review mod" : "Install a mod"}</h1><p className="muted">No changes are deployed until validation succeeds and you confirm.</p></div>{previews.length > 0 && <button onClick={onCancel}><X size={17} />{many ? "Cancel all" : "Cancel"}</button>}</header>
     {installer
       // An archive that scripts its own installation asks its questions first;
       // the answers decide which of its files are read as mods to review.

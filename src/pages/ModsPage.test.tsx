@@ -39,7 +39,7 @@ const loadOrder: LoadOrderState = {
 function props(overrides: Partial<Parameters<typeof ModsPage>[0]> = {}): Parameters<typeof ModsPage>[0] {
   return {
     mods: [], loadOrder, orderPreview: null, busy: null, orderBusy: false,
-    onInstall: vi.fn(), onToggle: vi.fn(), onUninstall: vi.fn(), onVerify: vi.fn(), onRename: vi.fn(),
+    onInstall: vi.fn(), onToggle: vi.fn(), onUninstall: vi.fn(), onReconfigure: vi.fn(), onVerify: vi.fn(), onRename: vi.fn(),
     onOpenInstalled: vi.fn(), onOpenSource: vi.fn(), onBrowseNexus: vi.fn(),
     onPreviewOrder: vi.fn(), onApplyOrder: vi.fn(), onApplyUe4ssOrder: vi.fn(), onCancelOrder: vi.fn(),
     updates: null, checkingUpdates: false, canCheckUpdates: true, directDownload: false,
@@ -51,7 +51,7 @@ function props(overrides: Partial<Parameters<typeof ModsPage>[0]> = {}): Paramet
 const installed = (id: string, modType: ModSummary["modType"]): ModSummary => ({
   id, name: id, version: null, modType, enabled: true, installedAt: "2026-08-30T00:00:00Z",
   installedBuild: null, packageCount: 0, conflictCount: 0, potentialConflictCount: 0,
-  loadPriority: null, nexusModId: null, nexusUrl: null, nexusIgnored: false, hidden: false, files: []
+  loadPriority: null, nexusModId: null, nexusUrl: null, nexusIgnored: false, hidden: false, fomod: false, files: []
 });
 
 async function openLoadOrder() {
@@ -346,6 +346,19 @@ describe("hiding a mod", () => {
     expect(screen.getByText("BPML Generic Functions")).toBeDefined();
     await userEvent.click(screen.getByRole("button", { name: "Show BPML Generic Functions" }));
     expect(onSetHidden).toHaveBeenCalledWith(hidden, false);
+  });
+});
+
+describe("FOMOD reconfiguration", () => {
+  it("offers the retained installer only for mods installed through a FOMOD", async () => {
+    const onReconfigure = vi.fn();
+    const guided = { ...installed("guided", "iostore"), name: "Guided Mod", fomod: true };
+    const plain = { ...installed("plain", "pak"), name: "Plain Mod" };
+    render(<ModsPage {...props({ mods: [guided, plain], onReconfigure })} />);
+
+    expect(screen.queryByRole("button", { name: "Reconfigure Plain Mod" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Reconfigure Guided Mod" }));
+    expect(onReconfigure).toHaveBeenCalledWith(guided);
   });
 });
 

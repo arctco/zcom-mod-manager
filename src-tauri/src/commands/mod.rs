@@ -388,10 +388,10 @@ fn begin_installer(
         installer,
         staging_root: staging.root,
         source: source.to_path_buf(),
+        reconfigure: None,
     };
     if session.complete {
         let previews = apply_installer(ctx, &pending, &[])?;
-        let _ = std::fs::remove_dir_all(&pending.staging_root);
         return Ok(Inspection {
             previews,
             installer: None,
@@ -407,6 +407,88 @@ fn begin_installer(
     Ok(Inspection {
         previews: Vec::new(),
         installer: Some(session),
+    })
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FomodReconfiguration {
+    previews: Vec<ModPreview>,
+    installer: Option<fomod::Session>,
+    answers: Vec<fomod::StepAnswer>,
+}
+
+/// Reopens the complete FOMOD tree retained alongside an installed mod. The
+/// retained copy is staged again so cancellation and preview cleanup can never
+/// remove or modify the library's durable source.
+#[tauri::command]
+pub fn reconfigure_fomod(id: String, ctx: State<'_, AppContext>) -> Result<FomodReconfiguration> {
+    let conn = connection(&ctx)?;
+    let summary = database::list_mods(&conn)?
+        .into_iter()
+        .find(|item| item.id == id)
+        .ok_or_else(|| AppError::Other("That mod is no longer installed.".into()))?;
+    let (source_archive, answers_json) = database::fomod_install(&conn, &id)?.ok_or_else(|| {
+        AppError::Other("That mod was not installed through a retained FOMOD.".into())
+    })?;
+    let answers: Vec<fomod::StepAnswer> = serde_json::from_str(&answers_json)
+        .map_err(|_| AppError::Other("The saved FOMOD choices are unreadable.".into()))?;
+    let library = mods_dir(&ctx)?;
+    let retained = library.join(&id).join("fomod-source");
+    if !retained.is_dir() {
+        return Err(AppError::Other(
+            "The retained FOMOD source is missing. Reinstall this mod from its original archive once to restore reconfiguration.".into(),
+        ));
+    }
+    let staging = archives::stage(&retained, &ctx.cache_dir)?;
+    let package_root = fomod::locate(&staging.root).ok_or_else(|| {
+        let _ = std::fs::remove_dir_all(&staging.root);
+        AppError::Other("The retained source no longer contains a FOMOD installer.".into())
+    })?;
+    let installer = match fomod::parse(&package_root) {
+        Ok(installer) => installer,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&staging.root);
+            return Err(error);
+        }
+    };
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let session = match installer.session(&session_id, &[]) {
+        Ok(session) => session,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&staging.root);
+            return Err(error);
+        }
+    };
+    let target = ReplacedMod {
+        mod_id: summary.id.clone(),
+        name: summary.name.clone(),
+        version: summary.version.clone(),
+        reason: "Reconfiguring the retained guided installer.".into(),
+    };
+    let pending = fomod::Pending {
+        installer,
+        staging_root: staging.root,
+        source: source_archive
+            .filter(|source| !source.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or(retained),
+        reconfigure: Some((target, summary.mod_type)),
+    };
+    if session.complete {
+        let previews = apply_installer(&ctx, &pending, &answers)?;
+        return Ok(FomodReconfiguration {
+            previews,
+            installer: None,
+            answers,
+        });
+    }
+    installers(&ctx)?.insert(session_id, pending);
+    log(&ctx, "info", "fomod_reconfigured", &format!("mod_id={id}"));
+    Ok(FomodReconfiguration {
+        previews: Vec::new(),
+        installer: Some(session),
+        answers,
     })
 }
 
@@ -446,8 +528,48 @@ fn apply_installer(
         warnings: built.warnings,
         executables: built.executables,
     };
-    let found = scan_staged(ctx, &pending.source, staging)?;
-    register_previews(ctx, found)
+    let mut found = scan_staged(ctx, &pending.source, staging)?;
+    let answers_json = serde_json::to_string(answers)?;
+    for (staged, _) in &mut found {
+        staged.fomod_source_root = Some(pending.staging_root.clone());
+        staged.fomod_answers = Some(answers_json.clone());
+    }
+    let mut previews = register_previews(ctx, found)?;
+    if let Some((target, mod_type)) = &pending.reconfigure {
+        let already_targeted = previews.iter().any(|preview| {
+            preview
+                .replaces
+                .as_ref()
+                .is_some_and(|item| item.mod_id == target.mod_id)
+        });
+        if !already_targeted {
+            let named = previews
+                .iter()
+                .enumerate()
+                .filter(|(_, preview)| preview.name.eq_ignore_ascii_case(&target.name))
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            let typed = previews
+                .iter()
+                .enumerate()
+                .filter(|(_, preview)| preview.mod_type == *mod_type)
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            let index = if named.len() == 1 {
+                named.first().copied()
+            } else if typed.len() == 1 {
+                typed.first().copied()
+            } else if previews.len() == 1 {
+                Some(0)
+            } else {
+                None
+            };
+            if let Some(index) = index {
+                previews[index].replaces = Some(target.clone());
+            }
+        }
+    }
+    Ok(previews)
 }
 
 /// Records the script's own metadata as a manifest, unless the files it
@@ -522,10 +644,10 @@ pub fn fomod_install(
         .ok_or(AppError::PreviewExpired)?;
     let result = apply_installer(&ctx, &pending, &answers);
     match &result {
-        // The archive is only needed while questions remain, and the answers
-        // have been copied out of it.
+        // The complete option tree remains referenced by the previews. It is
+        // copied into the managed library on confirmation, then released after
+        // the last preview from this installer is consumed.
         Ok(previews) => {
-            let _ = std::fs::remove_dir_all(&pending.staging_root);
             log(
                 &ctx,
                 "info",
@@ -672,7 +794,11 @@ fn game_path(conn: &rusqlite::Connection) -> Result<Option<PathBuf>> {
 /// installation and is cleaned up after the last.
 fn release_staging(ctx: &AppContext, root: &Path) {
     let still_needed = previews(ctx)
-        .map(|held| held.values().any(|staged| staged.staging_root == root))
+        .map(|held| {
+            held.values().any(|staged| {
+                staged.staging_root == root || staged.fomod_source_root.as_deref() == Some(root)
+            })
+        })
         .unwrap_or(true);
     if !still_needed {
         let _ = std::fs::remove_dir_all(root);
@@ -688,6 +814,9 @@ pub fn discard_previews(staging_ids: Vec<String>, ctx: State<'_, AppContext>) ->
         for id in &staging_ids {
             if let Some(staged) = held.remove(id) {
                 roots.push(staged.staging_root);
+                if let Some(root) = staged.fomod_source_root {
+                    roots.push(root);
+                }
             }
         }
     }
@@ -812,6 +941,9 @@ pub fn install_mod(
     // sandbox.
     previews(&ctx)?.remove(&staging_id);
     release_staging(&ctx, &staged.staging_root);
+    if let Some(root) = &staged.fomod_source_root {
+        release_staging(&ctx, root);
+    }
     // A payload that arrived through the nxm:// handoff carries the mod and
     // file it came from. Recording it here is what later lets the manager ask
     // Nexus whether a newer file exists; a hand-picked archive records nothing
@@ -2393,6 +2525,8 @@ mod update_tests {
             packages: Vec::new(),
             verification: "passed".into(),
             verification_details: None,
+            fomod_source_root: None,
+            fomod_answers: None,
         };
         let core = component(
             "IoStore",

@@ -108,6 +108,9 @@ pub struct ModSummary {
     /// Kept out of the library list. Still installed, still deployed, and still
     /// ordered — only hidden from view.
     pub hidden: bool,
+    /// Installed through a retained FOMOD recipe, so its guided installer can
+    /// be opened again without the original download.
+    pub fomod: bool,
     pub files: Vec<ModFile>,
 }
 
@@ -235,6 +238,13 @@ pub struct StagedMod {
     pub packages: Vec<String>,
     pub verification: String,
     pub verification_details: Option<String>,
+    /// The complete extracted FOMOD package. Unlike `staging_root`, this holds
+    /// every option, not only the payload selected by the current answers.
+    pub fomod_source_root: Option<PathBuf>,
+    /// The complete answer recipe, serialized for storage with the installed
+    /// mod. `None` distinguishes an ordinary archive from a zero-question
+    /// FOMOD, whose valid recipe is an empty JSON array.
+    pub fomod_answers: Option<String>,
 }
 
 /// An installed mod that a candidate would take the place of, so the interface

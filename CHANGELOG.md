@@ -2,6 +2,16 @@
 
 All notable changes are documented here.
 
+## 0.6.2
+
+### Added
+
+- Newly installed FOMOD mods now offer **Reconfigure FOMOD** in the library. The
+  complete installer source and its last answers are retained with the managed
+  mod, so the wizard can be reopened with those choices preselected even when
+  the original download has been moved or deleted. The result returns to the
+  normal validation and in-place replacement review before deployment.
+
 ## 0.6.1
 
 ### Fixed

@@ -332,6 +332,8 @@ fn collect(
             packages: Vec::new(),
             verification: "not-required".into(),
             verification_details: None,
+            fomod_source_root: None,
+            fomod_answers: None,
         };
         return Ok(vec![(staged, preview)]);
     }
@@ -785,6 +787,8 @@ fn collect(
             packages: bucket_packages.clone(),
             verification: verification.clone(),
             verification_details: details.clone(),
+            fomod_source_root: None,
+            fomod_answers: None,
         };
         let preview = ModPreview {
             staging_id,

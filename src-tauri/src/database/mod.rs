@@ -14,6 +14,7 @@ pub fn open(path: &Path) -> Result<Connection> {
       CREATE TABLE IF NOT EXISTS mod_files(id INTEGER PRIMARY KEY, mod_id TEXT NOT NULL REFERENCES mods(id) ON DELETE CASCADE, library_relative TEXT NOT NULL, destination TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS mod_packages(mod_id TEXT NOT NULL REFERENCES mods(id) ON DELETE CASCADE, package_id TEXT NOT NULL, PRIMARY KEY(mod_id, package_id));
       CREATE TABLE IF NOT EXISTS mod_backups(mod_id TEXT NOT NULL REFERENCES mods(id) ON DELETE CASCADE, destination TEXT NOT NULL, backup_relative TEXT NOT NULL, sha256 TEXT NOT NULL, PRIMARY KEY(mod_id, destination));
+      CREATE TABLE IF NOT EXISTS fomod_installs(mod_id TEXT PRIMARY KEY REFERENCES mods(id) ON DELETE CASCADE, answers_json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS nexus_sources(archive_path TEXT PRIMARY KEY, nexus_mod_id INTEGER NOT NULL, nexus_file_id INTEGER NOT NULL, version TEXT, file_name TEXT NOT NULL, downloaded_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS nexus_identification(mod_id TEXT PRIMARY KEY REFERENCES mods(id) ON DELETE CASCADE, md5 TEXT NOT NULL, matched INTEGER NOT NULL, attempted_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS nexus_updates(nexus_mod_id INTEGER PRIMARY KEY, latest_file_id INTEGER NOT NULL, latest_version TEXT, latest_file_name TEXT NOT NULL, checked_at TEXT NOT NULL);
@@ -25,6 +26,7 @@ pub fn open(path: &Path) -> Result<Connection> {
     migrate_v4(&mut connection)?;
     migrate_v5(&mut connection)?;
     migrate_v6(&mut connection)?;
+    migrate_v7(&mut connection)?;
     Ok(connection)
 }
 
@@ -178,6 +180,32 @@ fn migrate_v6(conn: &mut Connection) -> Result<()> {
     )?;
     transaction.execute(
         "INSERT INTO schema_migrations(version,applied_at) VALUES(6,datetime('now'))",
+        [],
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+/// Marks installs whose complete FOMOD source tree is retained in the managed
+/// library and stores the answers needed to seed the wizard next time.
+fn migrate_v7(conn: &mut Connection) -> Result<()> {
+    let applied: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=7)",
+        [],
+        |row| row.get(0),
+    )?;
+    if applied {
+        return Ok(());
+    }
+    let transaction = conn.transaction()?;
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS fomod_installs(
+           mod_id TEXT PRIMARY KEY REFERENCES mods(id) ON DELETE CASCADE,
+           answers_json TEXT NOT NULL
+         );",
+    )?;
+    transaction.execute(
+        "INSERT INTO schema_migrations(version,applied_at) VALUES(7,datetime('now'))",
         [],
     )?;
     transaction.commit()?;
@@ -511,7 +539,7 @@ pub fn counts(conn: &Connection) -> Result<(usize, usize)> {
 }
 
 pub fn list_mods(conn: &Connection) -> Result<Vec<ModSummary>> {
-    let mut stmt = conn.prepare("SELECT id,name,version,mod_type,enabled,installed_at,installed_build,load_priority,nexus_mod_id,hidden,nexus_ignored FROM mods ORDER BY installed_at DESC")?;
+    let mut stmt = conn.prepare("SELECT id,name,version,mod_type,enabled,installed_at,installed_build,load_priority,nexus_mod_id,hidden,nexus_ignored,EXISTS(SELECT 1 FROM fomod_installs f WHERE f.mod_id=mods.id) FROM mods ORDER BY installed_at DESC")?;
     let rows = stmt.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,
@@ -525,6 +553,7 @@ pub fn list_mods(conn: &Connection) -> Result<Vec<ModSummary>> {
             r.get::<_, Option<i64>>(8)?,
             r.get::<_, bool>(9)?,
             r.get::<_, bool>(10)?,
+            r.get::<_, bool>(11)?,
         ))
     })?;
     let mut result = Vec::new();
@@ -541,6 +570,7 @@ pub fn list_mods(conn: &Connection) -> Result<Vec<ModSummary>> {
             nexus_mod_id,
             hidden,
             nexus_ignored,
+            fomod,
         ) = row?;
         let mut fs = conn.prepare(
             "SELECT destination,size,sha256 FROM mod_files WHERE mod_id=?1 ORDER BY destination",
@@ -587,10 +617,30 @@ pub fn list_mods(conn: &Connection) -> Result<Vec<ModSummary>> {
             nexus_url: nexus_mod_id.map(|id| crate::nexus::mod_url(id as u64)),
             nexus_ignored,
             hidden,
+            fomod,
             files,
         });
     }
     Ok(result)
+}
+
+pub fn record_fomod_install(tx: &Transaction<'_>, mod_id: &str, answers_json: &str) -> Result<()> {
+    tx.execute(
+        "INSERT INTO fomod_installs(mod_id,answers_json) VALUES(?1,?2)",
+        params![mod_id, answers_json],
+    )?;
+    Ok(())
+}
+
+/// The source label and saved recipe for an installed FOMOD.
+pub fn fomod_install(conn: &Connection, mod_id: &str) -> Result<Option<(Option<String>, String)>> {
+    conn.query_row(
+        "SELECT m.source_archive,f.answers_json FROM fomod_installs f JOIN mods m ON m.id=f.mod_id WHERE f.mod_id=?1",
+        [mod_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 pub fn insert_mod(
@@ -890,6 +940,7 @@ mod tests {
             nexus_url: None,
             nexus_ignored: false,
             hidden: false,
+            fomod: false,
             files: vec![],
         }
     }

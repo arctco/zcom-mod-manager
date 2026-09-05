@@ -720,6 +720,8 @@ mod tests {
             packages: packages.iter().map(|value| (*value).into()).collect(),
             verification: "not-required".into(),
             verification_details: None,
+            fomod_source_root: None,
+            fomod_answers: None,
         }
     }
 

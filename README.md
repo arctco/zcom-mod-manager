@@ -238,6 +238,12 @@ archive holding sixteen mutually exclusive variants therefore becomes one mod
 entry rather than sixteen options to compare by hand, and the download it came
 from is still recorded, so update checking keeps working.
 
+After a guided install is confirmed, the manager retains the complete FOMOD
+source tree and the answers used—not only the selected payload. Its library row
+then offers **Reconfigure FOMOD**, which reopens the installer with those choices
+preselected. Finishing produces the normal replacement preview, so changed
+options are validated and deployed transactionally over the existing mod.
+
 The script is untrusted archive data and is never executed. Every source and
 destination path is checked against the same rules the extractor applies, once
 when the script is parsed and again immediately before each file is written; a

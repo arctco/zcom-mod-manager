@@ -152,6 +152,7 @@ pub fn run() {
             commands::fomod_advance,
             commands::fomod_install,
             commands::fomod_cancel,
+            commands::reconfigure_fomod,
             commands::discover_existing_mods,
             commands::adopt_existing_mods,
             commands::acknowledge_existing_mod_prompt,

@@ -14,6 +14,40 @@ use std::{
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
+use walkdir::WalkDir;
+
+/// Copies a retained installer tree without following links. FOMOD packages
+/// have already passed archive validation, but this keeps the managed copy
+/// subject to the same boundary if the cache is changed between preview and
+/// confirmation.
+fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
+    for entry in WalkDir::new(source).follow_links(false) {
+        let entry = entry.map_err(|error| AppError::Other(error.to_string()))?;
+        let relative = entry
+            .path()
+            .strip_prefix(source)
+            .map_err(|error| AppError::Other(error.to_string()))?;
+        if relative.as_os_str().is_empty() {
+            continue;
+        }
+        if entry.file_type().is_symlink() {
+            return Err(AppError::UnsafeArchive(format!(
+                "symbolic link {}",
+                relative.display()
+            )));
+        }
+        let target = destination.join(relative);
+        if entry.file_type().is_dir() {
+            fs::create_dir_all(target)?;
+        } else {
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
 
 pub fn sha256(path: &Path) -> Result<String> {
     let mut file = fs::File::open(path)?;
@@ -203,6 +237,12 @@ fn install_over(
         }
         fs::copy(&file.source, &target)?;
     }
+    if let Some(source) = &staged.fomod_source_root {
+        if let Err(error) = copy_tree(source, &mod_library.join("fomod-source")) {
+            let _ = fs::remove_dir_all(&mod_library);
+            return Err(error);
+        }
+    }
     let base = destination_base(game, &staged.mod_type);
     fs::create_dir_all(&base)?;
     let mut deployed = Vec::new();
@@ -282,6 +322,7 @@ fn install_over(
         nexus_url: None,
         nexus_ignored: false,
         hidden: false,
+        fomod: staged.fomod_answers.is_some(),
         files: rows
             .iter()
             .map(|(_, d, s, h)| ModFile {
@@ -306,6 +347,9 @@ fn install_over(
         &staged.packages,
     )
     .and_then(|_| {
+        if let Some(answers) = staged.fomod_answers.as_deref() {
+            database::record_fomod_install(&tx, &id, answers)?;
+        }
         for (destination, relative, hash) in &backups {
             database::record_backup(&tx, &id, destination, relative, hash)?;
         }
@@ -607,6 +651,8 @@ mod tests {
             packages: vec![],
             verification: "not-required".into(),
             verification_details: None,
+            fomod_source_root: None,
+            fomod_answers: None,
         }
     }
     fn game(root: &Path) {
@@ -635,6 +681,40 @@ mod tests {
         uninstall(&c, &l, &m.id, false, Some(&g)).unwrap();
         assert!(!deployed.exists());
     }
+
+    #[test]
+    fn fomod_install_keeps_the_full_source_and_answer_recipe() {
+        let d = tempdir().unwrap();
+        let g = d.path().join("game");
+        let l = d.path().join("library");
+        let source = d.path().join("complete-fomod");
+        game(&g);
+        fs::create_dir_all(source.join("fomod")).unwrap();
+        fs::create_dir_all(&l).unwrap();
+        fs::create_dir_all(d.path().join("selected")).unwrap();
+        fs::write(source.join("fomod/ModuleConfig.xml"), b"<config />").unwrap();
+        fs::write(source.join("unselected-option.bin"), b"variant").unwrap();
+        let mut candidate = staged(&d.path().join("selected"));
+        candidate.fomod_source_root = Some(source);
+        candidate.fomod_answers = Some(r#"[{"step":0,"plugins":["g0p1"]}]"#.into());
+        let mut c = database::open(&d.path().join("db")).unwrap();
+
+        let installed = install(&mut c, &l, &g, &candidate, None).unwrap();
+
+        assert!(installed.fomod);
+        assert!(l
+            .join(&installed.id)
+            .join("fomod-source/unselected-option.bin")
+            .is_file());
+        assert_eq!(
+            database::fomod_install(&c, &installed.id).unwrap(),
+            Some((
+                Some(candidate.source_archive),
+                r#"[{"step":0,"plugins":["g0p1"]}]"#.into()
+            ))
+        );
+        assert!(database::list_mods(&c).unwrap()[0].fomod);
+    }
     /// A UE4SS mod deploys into a folder tree of its own, the way Squad Six's
     /// Runtime component does.
     fn staged_ue4ss(root: &Path) -> StagedMod {
@@ -658,6 +738,8 @@ mod tests {
             packages: vec![],
             verification: "not-required".into(),
             verification_details: None,
+            fomod_source_root: None,
+            fomod_answers: None,
         }
     }
 
@@ -763,6 +845,8 @@ mod tests {
             packages: vec![],
             verification: "not-required".into(),
             verification_details: None,
+            fomod_source_root: None,
+            fomod_answers: None,
         }
     }
 
@@ -887,6 +971,8 @@ mod tests {
             packages: vec![],
             verification: "not-required".into(),
             verification_details: None,
+            fomod_source_root: None,
+            fomod_answers: None,
         };
         let mut c = database::open(&d.path().join("db")).unwrap();
         let installed = install(&mut c, &l, &g, &staged, None).unwrap();
@@ -926,6 +1012,8 @@ mod tests {
             packages: vec![],
             verification: "not-required".into(),
             verification_details: None,
+            fomod_source_root: None,
+            fomod_answers: None,
         }
     }
 
