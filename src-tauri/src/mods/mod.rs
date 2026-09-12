@@ -179,6 +179,38 @@ fn sanitize_folder(name: &str) -> String {
     }
 }
 
+/// Plugin mods: the folders the game mounts from `SWZeroCompany/Mods`.
+///
+/// A plugin mod carries a `<Name>.uplugin` manifest beside the asset registry
+/// that tells the game what the mod adds, and keeps its own packaged content
+/// under `Content/Paks`. The three files belong together: deploying the paks
+/// on their own mounts the data and registers none of it, so everything the
+/// mod adds is missing while the mod still looks installed and enabled.
+///
+/// The `.uplugin` stem names the plugin, and Unreal requires the folder to
+/// carry that same name, so it is used rather than the folder as extracted.
+fn plugin_folders(files: &[PathBuf]) -> Vec<(PathBuf, String)> {
+    let found: BTreeMap<PathBuf, String> = files
+        .iter()
+        .filter(|file| lowercase_ext(file) == "uplugin")
+        .filter_map(|file| {
+            let folder = file.parent()?.to_path_buf();
+            let stem = file.file_stem()?.to_string_lossy().into_owned();
+            Some((folder, sanitize_folder(&stem)))
+        })
+        .collect();
+    // A plugin nested inside another is part of that plugin's payload.
+    found
+        .iter()
+        .filter(|(folder, _)| {
+            !found
+                .keys()
+                .any(|other| other != *folder && folder.starts_with(other))
+        })
+        .map(|(folder, name)| (folder.clone(), name.clone()))
+        .collect()
+}
+
 struct Bucket {
     kind: &'static str,
     files: Vec<PayloadFile>,
@@ -410,6 +442,54 @@ fn collect(
             files: payload,
             keys: vec![key],
             intrinsic_name: (folder != root).then(|| display_name(&file_name(folder))),
+            packages: Vec::new(),
+            package_paths: Vec::new(),
+            verification: "not-required".into(),
+            verification_details: None,
+            option_label: None,
+        });
+    }
+
+    // Plugin mods, claimed before the packaged content below. Their paks sit
+    // under the plugin's own `Content/Paks`, so the packaged pass would take
+    // them for `~mods` and leave the manifest and the asset registry behind as
+    // unrecognized leftovers - the files that make the mod's content visible.
+    let mut plugin_keys: Vec<String> = Vec::new();
+    for (folder, key) in plugin_folders(&files) {
+        if plugin_keys
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(&key))
+        {
+            return Err(AppError::Other(format!(
+                "This archive contains two plugin mods named {key}. Extract it and \
+                 install one at a time."
+            )));
+        }
+        let inside_plugin: Vec<PathBuf> = files
+            .iter()
+            .filter(|file| file.starts_with(&folder) && !claimed.contains(*file))
+            .cloned()
+            .collect();
+        let mut payload = Vec::new();
+        for file in inside_plugin {
+            let inside = rel(&folder, &file)?;
+            let relative = PathBuf::from(&key).join(&inside);
+            payload.push(PayloadFile {
+                source: file.clone(),
+                library_relative: relative.clone(),
+                destination_relative: relative,
+            });
+            claimed.insert(file);
+        }
+        if payload.is_empty() {
+            continue;
+        }
+        plugin_keys.push(key.clone());
+        buckets.push(Bucket {
+            kind: "plugin",
+            files: payload,
+            keys: Vec::new(),
+            intrinsic_name: Some(display_name(&key)),
             packages: Vec::new(),
             package_paths: Vec::new(),
             verification: "not-required".into(),
@@ -837,6 +917,11 @@ fn collect(
                         .into(),
                 ),
                 "ue4ss" => Some("UE4SS mods use their own runtime ordering.".into()),
+                "plugin" => Some(
+                    "Plugin mods load from their own folder under the game's Mods directory \
+                     and are not ordered."
+                        .into(),
+                ),
                 "gamedir" => {
                     Some("Game-folder mods are placed at fixed paths and are not ordered.".into())
                 }
@@ -959,6 +1044,86 @@ mod tests {
         assert_eq!(preview.verification, "unavailable");
         assert!(!preview.valid);
         assert!(preview.load_order_supported);
+    }
+
+    /// The layout every Zero Company Mod Studio release ships.
+    fn write_plugin(root: &Path, name: &str) {
+        write(&root.join(format!("{name}/{name}.uplugin")), b"{}");
+        write(&root.join(format!("{name}/AssetRegistry.bin")), b"registry");
+        for ext in ["pak", "utoc", "ucas"] {
+            write(
+                &root.join(format!("{name}/Content/Paks/{name}_P.{ext}")),
+                b"synthetic",
+            );
+        }
+    }
+
+    #[test]
+    fn plugin_keeps_manifest_and_registry_with_its_paks() {
+        let s = tempdir().unwrap();
+        let c = tempdir().unwrap();
+        write_plugin(s.path(), "Delta_Squad");
+
+        let (staged, preview) = one(s.path(), c.path(), false);
+
+        assert_eq!(preview.mod_type, "plugin");
+        // The two files that make the mod's content visible must survive, and
+        // the paks must not be split off into a separate `~mods` bucket.
+        assert_eq!(preview.files.len(), 5);
+        assert!(preview.warnings.is_empty(), "{:?}", preview.warnings);
+        assert!(preview.valid);
+        assert!(!preview.load_order_supported);
+
+        let destinations: BTreeSet<String> = staged
+            .files
+            .iter()
+            .map(|file| {
+                file.destination_relative
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        assert!(destinations.contains("Delta_Squad/Delta_Squad.uplugin"));
+        assert!(destinations.contains("Delta_Squad/AssetRegistry.bin"));
+        assert!(destinations.contains("Delta_Squad/Content/Paks/Delta_Squad_P.pak"));
+    }
+
+    /// Unreal keys a plugin on its manifest name, and the game looks for the
+    /// folder under that name, so an archive folder spelled differently must
+    /// not decide where the mod lands.
+    #[test]
+    fn plugin_folder_takes_the_manifest_name() {
+        let s = tempdir().unwrap();
+        let c = tempdir().unwrap();
+        write(&s.path().join("Foxtrot v2 FINAL/Foxtrot.uplugin"), b"{}");
+        write(
+            &s.path().join("Foxtrot v2 FINAL/Content/Paks/Foxtrot_P.pak"),
+            b"pak",
+        );
+
+        let (staged, preview) = one(s.path(), c.path(), false);
+
+        assert_eq!(preview.mod_type, "plugin");
+        assert!(staged
+            .files
+            .iter()
+            .all(|file| file.destination_relative.starts_with("Foxtrot")));
+    }
+
+    #[test]
+    fn plugin_and_loose_pak_stay_separate_mods() {
+        let s = tempdir().unwrap();
+        let c = tempdir().unwrap();
+        write_plugin(s.path(), "Echo_S7_Suit");
+        write(&s.path().join("Standalone_P.pak"), b"loose");
+
+        let found = scan(s.path(), c.path(), &tool(), None, false, false).unwrap();
+
+        let kinds: BTreeSet<&str> = found
+            .iter()
+            .map(|(_, preview)| preview.mod_type.as_str())
+            .collect();
+        assert_eq!(kinds, BTreeSet::from(["plugin", "pak"]));
     }
 
     #[test]

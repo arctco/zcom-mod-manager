@@ -125,7 +125,7 @@ export interface ToolInfo {
 }
 
 /** What a payload is and where it is deployed. */
-export type ModType = "iostore" | "pak" | "ue4ss" | "gamedir";
+export type ModType = "iostore" | "pak" | "ue4ss" | "gamedir" | "plugin";
 /** A preview may also describe the UE4SS runtime, which is not a mod. */
 export type PreviewType = ModType | "ue4ss-runtime";
 

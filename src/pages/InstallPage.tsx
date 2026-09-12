@@ -9,6 +9,7 @@ const typeLabel: Record<PreviewType, string> = {
   pak: "PAK-only mod",
   ue4ss: "UE4SS mod",
   gamedir: "Game folder mod",
+  plugin: "Plugin mod",
   "ue4ss-runtime": "UE4SS runtime package"
 };
 
