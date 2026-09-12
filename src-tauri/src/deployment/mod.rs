@@ -72,6 +72,7 @@ fn destination_base(game: &Path, kind: &str) -> PathBuf {
     match kind {
         "ue4ss" => game.join("SWZeroCompany/Binaries/Win64/ue4ss/Mods"),
         "gamedir" => game.to_path_buf(),
+        "plugin" => game.join("SWZeroCompany/Mods"),
         _ => game.join("SWZeroCompany/Content/Paks/~mods"),
     }
 }
@@ -673,6 +674,57 @@ mod tests {
         )
         .unwrap();
     }
+    /// A plugin mod is mounted from its own folder, so its files must land
+    /// under `SWZeroCompany/Mods/<Name>/` with the folder structure intact and
+    /// without the `_00NN_` priority suffix that `~mods` drops carry.
+    #[test]
+    fn plugin_installs_into_the_games_mods_folder_unrenamed() {
+        let d = tempdir().unwrap();
+        let g = d.path().join("game");
+        let l = d.path().join("library");
+        game(&g);
+        fs::create_dir_all(&l).unwrap();
+        let mut c = database::open(&d.path().join("db")).unwrap();
+
+        let src = d.path().join("Delta_Squad.uplugin");
+        fs::write(&src, b"{}").unwrap();
+        let pak_src = d.path().join("Delta_Squad_P.pak");
+        fs::write(&pak_src, b"synthetic").unwrap();
+        let mut staged = staged(d.path());
+        staged.name = "Delta Squad".into();
+        staged.mod_type = "plugin".into();
+        staged.files = vec![
+            PayloadFile {
+                source: src,
+                library_relative: "Delta_Squad/Delta_Squad.uplugin".into(),
+                destination_relative: "Delta_Squad/Delta_Squad.uplugin".into(),
+            },
+            PayloadFile {
+                source: pak_src,
+                library_relative: "Delta_Squad/Content/Paks/Delta_Squad_P.pak".into(),
+                destination_relative: "Delta_Squad/Content/Paks/Delta_Squad_P.pak".into(),
+            },
+        ];
+
+        let m = install(&mut c, &l, &g, &staged, None).unwrap();
+
+        let manifest = g.join("SWZeroCompany/Mods/Delta_Squad/Delta_Squad.uplugin");
+        let pak = g.join("SWZeroCompany/Mods/Delta_Squad/Content/Paks/Delta_Squad_P.pak");
+        assert!(manifest.exists(), "manifest must ship with the paks");
+        assert!(pak.exists());
+        assert!(
+            !g.join("SWZeroCompany/Content/Paks/~mods").exists()
+                || fs::read_dir(g.join("SWZeroCompany/Content/Paks/~mods"))
+                    .unwrap()
+                    .next()
+                    .is_none(),
+            "a plugin mod must not leave paks in ~mods"
+        );
+
+        uninstall(&c, &l, &m.id, false, Some(&g)).unwrap();
+        assert!(!manifest.exists());
+    }
+
     #[test]
     fn install_disable_enable_uninstall() {
         let d = tempdir().unwrap();
